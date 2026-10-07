@@ -34,13 +34,19 @@ cd "$(dirname "$0")/.."
 
 if [ -n "$OBJDUMP" ]; then
   objdump_help=$("$OBJDUMP" --help)
+  objdump_version=$("$OBJDUMP" --version)
 else
   objdump_help=$("$ALR" -n exec -- objdump --help)
+  objdump_version=$("$ALR" -n exec -- objdump --version)
 fi
 disassembly_args=(-d --no-show-raw-insn)
 # LLVM hides Mach-O function symbols behind section-start aliases unless
-# all symbols are requested. GNU objdump need not support this option.
-if grep -q -- '--show-all-symbols' <<< "$objdump_help"; then
+# all symbols are requested. GNU AArch64 objdump also supports this option,
+# but it exposes ELF mapping symbols ($d/$x) within functions, interrupting
+# the function boundaries the register parser tracks. GNU's default output
+# already labels the functions correctly.
+if grep -qi 'LLVM' <<< "$objdump_version" &&
+   grep -q -- '--show-all-symbols' <<< "$objdump_help"; then
   disassembly_args+=(--show-all-symbols)
 fi
 
@@ -96,11 +102,19 @@ printf '%s\n' \
   '__attribute__ ((zero_call_used_regs ("all")))' \
   'void blake2b_hardening_probe (void) { }' > "$probe_dir/probe.c"
 "$ALR" -n exec -- gcc -O2 -c "$probe_dir/probe.c" -o "$probe_dir/probe.o"
-want=$(disassemble "$probe_dir/probe.o" \
-       | awk -v fn=blake2b_hardening_probe -f scripts/zeroed-at-return.awk)
+probe_dis=$(disassemble "$probe_dir/probe.o")
+printf '%s\n' "$probe_dis" > "$probe_dir/probe.dis"
+want=$(awk -v fn=blake2b_hardening_probe \
+           -f scripts/zeroed-at-return.awk <<< "$probe_dis")
 want=${want#ret:}
 if [ "$want" = none ] || [ -z "${want// /}" ]; then
   echo "could not measure the registers zero_call_used_regs zeroes"
+  echo "probe compiler:" >&2
+  "$ALR" -n exec -- gcc --version >&2
+  echo "probe disassembler:" >&2
+  printf '%s\n' "$objdump_version" >&2
+  echo "probe disassembly ($probe_dir/probe.dis):" >&2
+  printf '%s\n' "$probe_dis" >&2
   fail=1
 else
   echo "call-used registers on this target:$want"

@@ -7,6 +7,7 @@ on:
 # The toolchain is pinned: GNAT and GNATprove 16.1.0 are the releases with
 # builds for every platform below (an older pin loses aarch64 macOS or
 # aarch64 Linux).
+# GNAT 16's fixed headers need the newer Command Line Tools SDK on macos-15.
 env:
   ALIRE_VERSION: "2.1.1"
   TOOLCHAIN: "gnat_native=16.1.0 gprbuild=26.0.1"
@@ -22,7 +23,7 @@ jobs:
         include:
           - { name: linux-x86_64,   os: ubuntu-24.04 }
           - { name: linux-aarch64,  os: ubuntu-24.04-arm }
-          - { name: macos-arm64,    os: macos-14 }
+          - { name: macos-arm64,    os: macos-15 }
           - { name: windows-x86_64, os: windows-2022 }
     steps:
       - uses: actions/checkout@v4
@@ -57,7 +58,7 @@ jobs:
         include:
           - { name: linux-x86_64,   os: ubuntu-24.04 }
           - { name: linux-aarch64,  os: ubuntu-24.04-arm }
-          - { name: macos-arm64,    os: macos-14 }
+          - { name: macos-arm64,    os: macos-15 }
           - { name: windows-x86_64, os: windows-2022 }
     steps:
       - uses: actions/checkout@v4
@@ -65,6 +66,10 @@ jobs:
         with:
           version: ${{ env.ALIRE_VERSION }}
           toolchain: ${{ env.TOOLCHAIN }}
+      - name: Generate Alire configuration and build proof dependencies
+        shell: bash
+        working-directory: tests
+        run: alr -n build
       # Provers are bounded by steps, not time (see blake2b_spark.gpr), so
       # the result is the same on every machine.
       - name: GNATprove (all checks proved, or the job fails)
@@ -82,6 +87,8 @@ jobs:
         run: bash scripts/check-sources.sh --self-test
       - name: The register-clearing parser reads GNU and LLVM objdump on x86-64 and AArch64
         run: bash scripts/test-zeroed-at-return.sh
+      - name: Disassembler flags preserve GNU functions and LLVM aliases
+        run: bash scripts/test-check-hardening-disassembler.sh
       - name: Constant-time report checker rejects unexpected memory and secret-use errors
         run: python3 scripts/test-ct-valgrind.py
       - name: No unproved escape hatches in the library

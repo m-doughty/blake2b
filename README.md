@@ -241,6 +241,7 @@ library's own manifest stays free of it:
 
 ```sh
 cd tests
+alr build            # generate the library configuration and build dependencies
 alr exec -- gnatprove -P ../blake2b_spark.gpr -j0
 ```
 
