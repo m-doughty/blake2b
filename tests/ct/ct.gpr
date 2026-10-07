@@ -1,0 +1,26 @@
+--  Constant-time check (Linux CI only: needs valgrind/memcheck.h). Build
+--  through scripts/check-constant-time.sh, which isolates the two builds.
+
+with "blake2b_spark.gpr";
+
+project CT is
+
+   for Languages use ("Ada", "C");
+   for Source_Dirs use (".");
+   for Object_Dir use "obj";
+   for Exec_Dir use "bin";
+   for Main use ("ct_main.adb");
+   for Create_Missing_Dirs use "True";
+
+   package Compiler is
+      for Default_Switches ("Ada") use ("-gnat2022", "-O2", "-g");
+      for Default_Switches ("C") use ("-O2", "-g");
+   end Compiler;
+
+   --  Exact instruction addresses join the Valgrind XML to disassembly.
+   --  This project is used only by the Linux x86-64 constant-time gate.
+   package Linker is
+      for Default_Switches ("Ada") use ("-no-pie");
+   end Linker;
+
+end CT;

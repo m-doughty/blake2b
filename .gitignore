@@ -1,0 +1,22 @@
+# gprbuild and Alire outputs, for the crate and its nested tests/ crate.
+/obj/
+/lib/
+/bin/
+/alire/
+/config/
+/tests/obj/
+/tests/lib/
+/tests/bin/
+/tests/alire/
+/tests/config/
+/tests/ct/obj/
+/tests/ct/bin/
+
+# Mutation-suite scratch copies (scripts/mutants.sh).
+/.mutants/
+
+# Python bytecode caches.
+__pycache__/
+*.py[co]
+
+.DS_Store

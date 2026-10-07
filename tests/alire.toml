@@ -1,0 +1,22 @@
+name = "blake2b_spark_tests"
+description = "Tests, proofs and benchmarks for blake2b_spark"
+version = "0.1.0"
+
+authors = ["Matt Doughty"]
+maintainers-logins = ["m-doughty"]
+licenses = "BSD-3-Clause"
+executables = ["test_main"]
+
+# The development-only dependencies live here, never in the library's
+# own manifest: GNATprove (run as `alr exec -- gnatprove -P
+# ../blake2b_spark.gpr` from this directory) and, vendored under ref/,
+# the two C implementations the tests compare against.
+[[depends-on]]
+blake2b_spark = "*"
+gnatprove = "=16.1.0"
+
+[[pins]]
+blake2b_spark = { path = ".." }
+
+[build-switches]
+"*".ada_version = "Ada2022"

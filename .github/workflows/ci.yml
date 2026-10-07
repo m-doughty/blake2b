@@ -1,0 +1,161 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# The toolchain is pinned: GNAT and GNATprove 16.1.0 are the releases with
+# builds for every platform below (an older pin loses aarch64 macOS or
+# aarch64 Linux).
+env:
+  ALIRE_VERSION: "2.1.1"
+  TOOLCHAIN: "gnat_native=16.1.0 gprbuild=26.0.1"
+
+jobs:
+  test:
+    name: test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64,   os: ubuntu-24.04 }
+          - { name: linux-aarch64,  os: ubuntu-24.04-arm }
+          - { name: macos-arm64,    os: macos-14 }
+          - { name: windows-x86_64, os: windows-2022 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: alire-project/setup-alire@v4
+        with:
+          version: ${{ env.ALIRE_VERSION }}
+          toolchain: ${{ env.TOOLCHAIN }}
+      - name: Build matrix (-O0/-O2/-O3 x checks off/on, plus contracts)
+        shell: bash
+        run: bash scripts/matrix.sh
+      - name: Determinism gate
+        shell: bash
+        working-directory: tests
+        run: |
+          alr -n build
+          ./bin/profile-profile/bench_main --check
+      - name: Hardening present in release objects
+        shell: bash
+        run: bash scripts/check-hardening.sh
+      - name: Benchmark (reported, not gated)
+        shell: bash
+        working-directory: tests
+        run: ./bin/profile-profile/bench_main
+
+  prove:
+    name: prove (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64,   os: ubuntu-24.04 }
+          - { name: linux-aarch64,  os: ubuntu-24.04-arm }
+          - { name: macos-arm64,    os: macos-14 }
+          - { name: windows-x86_64, os: windows-2022 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: alire-project/setup-alire@v4
+        with:
+          version: ${{ env.ALIRE_VERSION }}
+          toolchain: ${{ env.TOOLCHAIN }}
+      # Provers are bounded by steps, not time (see blake2b_spark.gpr), so
+      # the result is the same on every machine.
+      - name: GNATprove (all checks proved, or the job fails)
+        shell: bash
+        working-directory: tests
+        run: alr -n exec -- gnatprove -P ../blake2b_spark.gpr -j0
+
+  gates:
+    name: source and version gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: The source gate catches known bypasses (case, line breaks, strings)
+        run: bash scripts/check-sources.sh --self-test
+      - name: The register-clearing parser reads GNU and LLVM objdump on x86-64 and AArch64
+        run: bash scripts/test-zeroed-at-return.sh
+      - name: Constant-time report checker rejects unexpected memory and secret-use errors
+        run: python3 scripts/test-ct-valgrind.py
+      - name: No unproved escape hatches in the library
+        run: bash scripts/check-sources.sh
+      - name: Versions agree
+        run: bash scripts/check-version.sh
+
+  third-oracle:
+    name: third oracle (CPython 3.14 hashlib = HACL*, linux-x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - uses: alire-project/setup-alire@v4
+        with:
+          version: ${{ env.ALIRE_VERSION }}
+          toolchain: ${{ env.TOOLCHAIN }}
+      - name: Implementation and specification vs 20 000 HACL* vectors
+        working-directory: tests
+        run: |
+          python3 ../scripts/cpython-vectors.py /tmp/cpython-vectors.json
+          alr -n build
+          ./bin/profile-profile/test_main --vectors /tmp/cpython-vectors.json
+
+  constant-time:
+    name: constant time (valgrind, linux-x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: alire-project/setup-alire@v4
+        with:
+          version: ${{ env.ALIRE_VERSION }}
+          toolchain: ${{ env.TOOLCHAIN }}
+      - name: Install Valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+      - name: Check isolated plain and hardened builds, including deliberate secret branches
+        run: bash scripts/check-constant-time.sh
+      - name: Preserve constant-time evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: constant-time-evidence
+          path: obj/constant-time/*/logs/
+          if-no-files-found: warn
+
+  instruction-count:
+    name: instruction count vs reference C (callgrind, linux-x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: alire-project/setup-alire@v4
+        with:
+          version: ${{ env.ALIRE_VERSION }}
+          toolchain: ${{ env.TOOLCHAIN }}
+      - name: Install Valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+      - name: Ada / C instruction ratio for 32 MiB (deterministic, gated)
+        working-directory: tests
+        run: |
+          alr -n build
+          count () {
+            valgrind --tool=callgrind --callgrind-out-file=/dev/null \
+              ./bin/profile-profile/bench_main --workload "$1" 2>&1 \
+              | sed -n 's/.*Collected : \([0-9]*\).*/\1/p'
+          }
+          ada=$(count ada)
+          c=$(count c)
+          echo "instructions: Ada $ada, reference C $c"
+          # Fails above 1.25x. Wall-clock on bulk data is ~1.0-1.1x; this
+          # threshold is to be tightened from the first CI measurements.
+          awk -v a="$ada" -v c="$c" \
+            'BEGIN { r = a / c; printf "ratio %.3f\n", r; exit (r > 1.25) }'

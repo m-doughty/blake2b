@@ -1,0 +1,101 @@
+with "config/blake2b_spark_config.gpr";
+
+project Blake2b_Spark is
+
+   for Library_Name use "Blake2b_Spark";
+   for Library_Version use
+     Project'Library_Name & ".so." & Blake2b_Spark_Config.Crate_Version;
+
+   for Source_Dirs use ("src/", "config/");
+   for Create_Missing_Dirs use "True";
+
+   type Library_Type_Type is ("relocatable", "static", "static-pic");
+   Library_Type : Library_Type_Type :=
+     external ("BLAKE2B_SPARK_LIBRARY_TYPE",
+               external ("LIBRARY_TYPE", "static"));
+   for Library_Kind use Library_Type;
+
+   --  Build matrix (scripts/matrix.sh). With both left at "profile" the
+   --  switches are exactly those of the Alire build profile, which is
+   --  what dependents get. Set both to build one matrix cell with a
+   --  fully explicit switch set:
+   --
+   --    BLAKE2B_SPARK_OPT     O0 | O2 | O3
+   --    BLAKE2B_SPARK_CHECKS  off       -gnatp, as release (proof-justified)
+   --                          lang      every language check, no contracts
+   --                          contracts lang plus -gnata (Pre/Post/
+   --                                    invariants executed: small inputs)
+   type Opt_Kind is ("profile", "O0", "O2", "O3");
+   Opt : Opt_Kind := external ("BLAKE2B_SPARK_OPT", "profile");
+
+   type Checks_Kind is ("profile", "off", "lang", "contracts");
+   Checks : Checks_Kind := external ("BLAKE2B_SPARK_CHECKS", "profile");
+
+   Common_Switches :=
+     ("-gnat2022", "-gnatW8", "-g", "-gnatwa", "-gnatw.X", "-gnatwe",
+      "-ffunction-sections", "-fdata-sections");
+
+   Opt_Switches := ();
+   case Opt is
+      when "profile" => null;
+      when "O0"      => Opt_Switches := ("-O0");
+      when "O2"      => Opt_Switches := ("-O2", "-gnatn");
+      when "O3"      => Opt_Switches := ("-O3", "-gnatn");
+   end case;
+
+   Check_Switches := ();
+   case Checks is
+      when "profile"   => null;
+      when "off"       => Check_Switches := ("-gnatp");
+      when "lang"      => Check_Switches := ("-gnato13", "-gnatVa");
+      when "contracts" =>
+         Check_Switches := ("-gnato13", "-gnatVa", "-gnata");
+   end case;
+
+   Cell := Opt & "-" & Checks;
+
+   for Object_Dir use "obj/" & Blake2b_Spark_Config.Build_Profile & "-" & Cell;
+   for Library_Dir use "lib/" & Blake2b_Spark_Config.Build_Profile & "-" & Cell;
+
+   package Compiler is
+      case Opt is
+         when "profile" =>
+            for Default_Switches ("Ada") use
+              Blake2b_Spark_Config.Ada_Compiler_Switches;
+         when others =>
+            for Default_Switches ("Ada") use
+              Common_Switches & Opt_Switches & Check_Switches;
+      end case;
+   end Compiler;
+
+   package Binder is
+      for Switches ("Ada") use ("-Es"); --  Symbolic traceback
+   end Binder;
+
+   --  One source of truth for the proof, locally and in CI. Run from
+   --  tests/ (where gnatprove is a dependency):
+   --    alr exec -- gnatprove -P ../blake2b_spark.gpr
+   --  Provers are bounded by --steps only (no wall-clock timeout), so a
+   --  proof result is reproducible from machine to machine.
+   package Prove is
+      for Proof_Switches ("Ada") use
+        ("--mode=all",
+         "--checks-as-errors=on",
+         "--proof-warnings=on",
+         "--warnings=error",
+         "--prover=z3,cvc5,altergo",
+         "--timeout=0",
+         "--steps=20000",
+         "--counterexamples=off",
+         "--report=fail");
+      --  The incremental API's 128-bit counter reasoning puts mathematical
+      --  integers into every check in this file, so it gets a larger
+      --  (still deterministic) step budget.
+      for Proof_Switches ("blake2b-hashing.adb") use ("--steps=200000");
+      --  The incremental model's theorems compose folds over whole
+      --  messages; the same larger budget.
+      for Proof_Switches ("blake2b-spec-incremental.adb") use
+        ("--steps=200000");
+   end Prove;
+
+end Blake2b_Spark;
