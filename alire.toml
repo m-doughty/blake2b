@@ -3,6 +3,7 @@ description = "BLAKE2b (RFC 7693) in SPARK, proven equal to the RFC specificatio
 version = "0.1.0"
 
 authors = ["Matt Doughty"]
+maintainers = ["Matt Doughty <matt@apogee.guru>"]
 maintainers-logins = ["m-doughty"]
 licenses = "BSD-3-Clause"
 tags = ["spark", "blake2b", "blake2", "hash", "crypto", "proof"]
