@@ -39,11 +39,11 @@ for cell in "${cells[@]}"; do
   "$ALR" -n build -- \
     "-XBLAKE2B_SPARK_OPT=$opt" "-XBLAKE2B_SPARK_CHECKS=$checks"
 
-  args=()
+  set --
   if [ "$checks" = contracts ]; then
-    args+=(--small --contracts)
+    set -- --small --contracts
   fi
-  if "./bin/$opt-$checks/test_main" "${args[@]}"; then
+  if "./bin/$opt-$checks/test_main" "$@"; then
     echo "cell -$opt/$checks: PASS"
   else
     echo "cell -$opt/$checks: FAIL"

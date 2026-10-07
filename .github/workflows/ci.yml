@@ -31,6 +31,9 @@ jobs:
         with:
           version: ${{ env.ALIRE_VERSION }}
           toolchain: ${{ env.TOOLCHAIN }}
+      - name: Matrix driver preserves arguments and propagates failures
+        shell: bash
+        run: bash scripts/test-matrix.sh
       - name: Build matrix (-O0/-O2/-O3 x checks off/on, plus contracts)
         shell: bash
         run: bash scripts/matrix.sh
