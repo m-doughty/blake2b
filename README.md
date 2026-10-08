@@ -1,6 +1,6 @@
-# blake2b_spark
+# blake2b
 
-**blake2b_spark**: BLAKE2b (RFC 7693) in SPARK, proven to compute
+**blake2b**: BLAKE2b (RFC 7693) in SPARK, proven to compute
 exactly what the RFC specifies.
 
 - **Proven correct.** GNATprove proves that the mixing function G, every
@@ -242,7 +242,7 @@ library's own manifest stays free of it:
 ```sh
 cd tests
 alr build            # generate the library configuration and build dependencies
-alr exec -- gnatprove -P ../blake2b_spark.gpr -j0
+alr exec -- gnatprove -P ../blake2b.gpr -j0
 ```
 
 Expected: `all checks proved`.
@@ -335,7 +335,7 @@ the workaround cannot silently turn off secret-use checking. `ALR`,
 against the BLAKE2 reference C compiled by the same GCC at the same
 `-O3`. Median of 7 runs, Windows 11 x86_64, GNAT 16.1.0:
 
-| Message | blake2b_spark | reference C | time ratio |
+| Message | blake2b | reference C | time ratio |
 |---|---|---|---|
 | 64 B | 256 MB/s | 356 MB/s | 1.39 |
 | 1 KiB | 728 MB/s | 806 MB/s | 1.11 |

@@ -110,7 +110,6 @@ is
       end loop;
    end Lemma_Fold_Agree;
 
-
    --  Joined starts with Before, so their padded inputs agree on the
    --  bytes Before has: the key block and Before itself. When Data is
    --  empty they have the same bytes, so they agree everywhere.

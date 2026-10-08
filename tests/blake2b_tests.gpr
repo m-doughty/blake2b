@@ -1,7 +1,7 @@
-with "config/blake2b_spark_tests_config.gpr";
-with "blake2b_spark.gpr";
+with "config/blake2b_tests_config.gpr";
+with "blake2b.gpr";
 
-project Blake2b_Spark_Tests is
+project Blake2b_Tests is
 
    --  Ada test harness plus two vendored C implementations of BLAKE2b
    --  (ref/: the BLAKE2 reference code and Monocypher) used as oracles.
@@ -11,11 +11,11 @@ project Blake2b_Spark_Tests is
 
    --  One object and executable directory per build-matrix cell, so the
    --  cells built by scripts/matrix.sh never overwrite each other.
-   Cell := external ("BLAKE2B_SPARK_OPT", "profile") & "-"
-           & external ("BLAKE2B_SPARK_CHECKS", "profile");
+   Cell := external ("BLAKE2B_OPT", "profile") & "-"
+           & external ("BLAKE2B_CHECKS", "profile");
 
    for Object_Dir use
-     "obj/" & Blake2b_Spark_Tests_Config.Build_Profile & "-" & Cell;
+     "obj/" & Blake2b_Tests_Config.Build_Profile & "-" & Cell;
    for Exec_Dir use "bin/" & Cell;
    for Main use ("test_main.adb", "bench_main.adb");
 
@@ -23,7 +23,7 @@ project Blake2b_Spark_Tests is
       --  The harness always checks its own assertions: they are how it
       --  evaluates the ghost specification.
       for Default_Switches ("Ada") use
-        Blake2b_Spark_Tests_Config.Ada_Compiler_Switches & ("-gnata");
+        Blake2b_Tests_Config.Ada_Compiler_Switches & ("-gnata");
       --  The oracles are third-party code, compiled as published, at the
       --  library's release optimisation level so that the benchmark
       --  compares like with like (same compiler, same -O3, no -march).
@@ -34,4 +34,4 @@ project Blake2b_Spark_Tests is
       for Switches ("Ada") use ("-Es"); --  Symbolic traceback
    end Binder;
 
-end Blake2b_Spark_Tests;
+end Blake2b_Tests;

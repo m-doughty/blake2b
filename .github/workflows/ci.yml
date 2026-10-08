@@ -73,12 +73,12 @@ jobs:
         shell: bash
         working-directory: tests
         run: alr -n build
-      # Provers are bounded by steps, not time (see blake2b_spark.gpr), so
+      # Provers are bounded by steps, not time (see blake2b.gpr), so
       # the result is the same on every machine.
       - name: GNATprove (all checks proved, or the job fails)
         shell: bash
         working-directory: tests
-        run: alr -n exec -- gnatprove -P ../blake2b_spark.gpr -j0
+        run: alr -n exec -- gnatprove -P ../blake2b.gpr -j0
 
   gates:
     name: source and version gates

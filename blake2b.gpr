@@ -1,17 +1,17 @@
-with "config/blake2b_spark_config.gpr";
+with "config/blake2b_config.gpr";
 
-project Blake2b_Spark is
+project Blake2b is
 
-   for Library_Name use "Blake2b_Spark";
+   for Library_Name use "Blake2b";
    for Library_Version use
-     Project'Library_Name & ".so." & Blake2b_Spark_Config.Crate_Version;
+     Project'Library_Name & ".so." & Blake2b_Config.Crate_Version;
 
    for Source_Dirs use ("src/", "config/");
    for Create_Missing_Dirs use "True";
 
    type Library_Type_Type is ("relocatable", "static", "static-pic");
    Library_Type : Library_Type_Type :=
-     external ("BLAKE2B_SPARK_LIBRARY_TYPE",
+     external ("BLAKE2B_LIBRARY_TYPE",
                external ("LIBRARY_TYPE", "static"));
    for Library_Kind use Library_Type;
 
@@ -20,16 +20,16 @@ project Blake2b_Spark is
    --  what dependents get. Set both to build one matrix cell with a
    --  fully explicit switch set:
    --
-   --    BLAKE2B_SPARK_OPT     O0 | O2 | O3
-   --    BLAKE2B_SPARK_CHECKS  off       -gnatp, as release (proof-justified)
+   --    BLAKE2B_OPT     O0 | O2 | O3
+   --    BLAKE2B_CHECKS  off       -gnatp, as release (proof-justified)
    --                          lang      every language check, no contracts
    --                          contracts lang plus -gnata (Pre/Post/
    --                                    invariants executed: small inputs)
    type Opt_Kind is ("profile", "O0", "O2", "O3");
-   Opt : Opt_Kind := external ("BLAKE2B_SPARK_OPT", "profile");
+   Opt : Opt_Kind := external ("BLAKE2B_OPT", "profile");
 
    type Checks_Kind is ("profile", "off", "lang", "contracts");
-   Checks : Checks_Kind := external ("BLAKE2B_SPARK_CHECKS", "profile");
+   Checks : Checks_Kind := external ("BLAKE2B_CHECKS", "profile");
 
    Common_Switches :=
      ("-gnat2022", "-gnatW8", "-g", "-gnatwa", "-gnatw.X", "-gnatwe",
@@ -54,14 +54,14 @@ project Blake2b_Spark is
 
    Cell := Opt & "-" & Checks;
 
-   for Object_Dir use "obj/" & Blake2b_Spark_Config.Build_Profile & "-" & Cell;
-   for Library_Dir use "lib/" & Blake2b_Spark_Config.Build_Profile & "-" & Cell;
+   for Object_Dir use "obj/" & Blake2b_Config.Build_Profile & "-" & Cell;
+   for Library_Dir use "lib/" & Blake2b_Config.Build_Profile & "-" & Cell;
 
    package Compiler is
       case Opt is
          when "profile" =>
             for Default_Switches ("Ada") use
-              Blake2b_Spark_Config.Ada_Compiler_Switches;
+              Blake2b_Config.Ada_Compiler_Switches;
          when others =>
             for Default_Switches ("Ada") use
               Common_Switches & Opt_Switches & Check_Switches;
@@ -74,7 +74,7 @@ project Blake2b_Spark is
 
    --  One source of truth for the proof, locally and in CI. Run from
    --  tests/ (where gnatprove is a dependency):
-   --    alr exec -- gnatprove -P ../blake2b_spark.gpr
+   --    alr exec -- gnatprove -P ../blake2b.gpr
    --  Provers are bounded by --steps only (no wall-clock timeout), so a
    --  proof result is reproducible from machine to machine.
    package Prove is
@@ -98,4 +98,4 @@ project Blake2b_Spark is
         ("--steps=200000");
    end Prove;
 
-end Blake2b_Spark;
+end Blake2b;

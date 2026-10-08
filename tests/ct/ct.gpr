@@ -1,7 +1,7 @@
 --  Constant-time check (Linux CI only: needs valgrind/memcheck.h). Build
 --  through scripts/check-constant-time.sh, which isolates the two builds.
 
-with "blake2b_spark.gpr";
+with "blake2b.gpr";
 
 project CT is
 

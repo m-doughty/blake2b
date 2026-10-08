@@ -74,9 +74,9 @@ copy_crate () {
   local dest=$1
   rm -rf "$dest"
   mkdir -p "$dest/tests"
-  cp -r "$ROOT/src" "$ROOT/alire.toml" "$ROOT/blake2b_spark.gpr" "$dest/"
+  cp -r "$ROOT/src" "$ROOT/alire.toml" "$ROOT/blake2b.gpr" "$dest/"
   cp -r "$ROOT/tests/src" "$ROOT/tests/ref" "$ROOT/tests/data" \
-        "$ROOT/tests/alire.toml" "$ROOT/tests/blake2b_spark_tests.gpr" \
+        "$ROOT/tests/alire.toml" "$ROOT/tests/blake2b_tests.gpr" \
         "$dest/tests/"
 }
 
@@ -103,7 +103,7 @@ build () {        # $1 = crate copy, $2 = log
 
 prove () {        # $1 = crate copy, $2 = unit, $3 = log
   (cd "$1/tests" && "$ALR" -n exec -- gnatprove \
-     -P ../blake2b_spark.gpr -j"$PROVE_JOBS" -u "$2" \
+     -P ../blake2b.gpr -j"$PROVE_JOBS" -u "$2" \
      --timeout="$MUTANT_TIMEOUT") > "$3" 2>&1
 }
 

@@ -1,4 +1,4 @@
---  blake2b_spark test runner.
+--  blake2b test runner.
 --
 --  Usage: test_main [--small] [--contracts] [path/to/blake2-kat.json]
 --

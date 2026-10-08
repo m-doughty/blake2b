@@ -1,4 +1,4 @@
-name = "blake2b_spark"
+name = "blake2b"
 description = "BLAKE2b (RFC 7693) in SPARK, proven equal to the RFC specification"
 version = "0.1.0"
 

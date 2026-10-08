@@ -35,9 +35,9 @@ copy_crate () {
   # dest is a fixed path under this gate's artifact directory.
   rm -rf "$dest"
   mkdir -p "$dest/tests/ct"
-  cp -r "$ROOT/src" "$ROOT/alire.toml" "$ROOT/blake2b_spark.gpr" "$dest/"
+  cp -r "$ROOT/src" "$ROOT/alire.toml" "$ROOT/blake2b.gpr" "$dest/"
   cp -r "$ROOT/tests/src" "$ROOT/tests/ref" "$ROOT/tests/data" \
-        "$ROOT/tests/alire.toml" "$ROOT/tests/blake2b_spark_tests.gpr" \
+        "$ROOT/tests/alire.toml" "$ROOT/tests/blake2b_tests.gpr" \
         "$dest/tests/"
   cp "$ROOT/tests/ct/ct.gpr" "$ROOT/tests/ct/ct_main.adb" \
      "$ROOT/tests/ct/ct_shim.c" "$dest/tests/ct/"
@@ -61,7 +61,7 @@ for mode in plain hardened; do
   # -f rebuilds the imported library too. Plain and hardened outputs never
   # share a directory, and neither can replace a production-build object.
   if ! (cd "$dest/tests" && "$ALR" -n exec -- gprbuild -P ct/ct.gpr \
-      -XBLAKE2B_SPARK_OPT=O3 -XBLAKE2B_SPARK_CHECKS=off -f \
+      -XBLAKE2B_OPT=O3 -XBLAKE2B_CHECKS=off -f \
       "${extra[@]}") > "$logs/build.log" 2>&1; then
     cat "$logs/build.log" >&2
     exit 1

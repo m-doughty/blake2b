@@ -22,8 +22,8 @@ set -euo pipefail
 [ "$2" = build ]
 [ "$3" = -- ]
 printf '%s\n' "$*" >> "$MOCK_DIR/builds"
-opt=${4#-XBLAKE2B_SPARK_OPT=}
-checks=${5#-XBLAKE2B_SPARK_CHECKS=}
+opt=${4#-XBLAKE2B_OPT=}
+checks=${5#-XBLAKE2B_CHECKS=}
 cell=$opt-$checks
 if [ "$cell" = "${MOCK_BUILD_FAIL:-}" ]; then exit 23; fi
 mkdir -p "bin/$cell"
@@ -50,7 +50,7 @@ O0 contracts
 EOF
 
 while read -r opt checks; do
-  printf '%s\n' "-n build -- -XBLAKE2B_SPARK_OPT=$opt -XBLAKE2B_SPARK_CHECKS=$checks" \
+  printf '%s\n' "-n build -- -XBLAKE2B_OPT=$opt -XBLAKE2B_CHECKS=$checks" \
     >> "$tmp/expected-builds"
   if [ "$checks" = contracts ]; then
     printf '%s\n' "$opt-$checks|2|--small --contracts"

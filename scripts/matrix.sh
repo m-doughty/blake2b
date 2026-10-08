@@ -37,7 +37,7 @@ for cell in "${cells[@]}"; do
   echo "cell: -$opt, checks=$checks"
   echo "=================================================================="
   "$ALR" -n build -- \
-    "-XBLAKE2B_SPARK_OPT=$opt" "-XBLAKE2B_SPARK_CHECKS=$checks"
+    "-XBLAKE2B_OPT=$opt" "-XBLAKE2B_CHECKS=$checks"
 
   set --
   if [ "$checks" = contracts ]; then

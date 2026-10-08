@@ -1,4 +1,4 @@
---  blake2b_spark benchmark.
+--  blake2b benchmark.
 --
 --  Usage: bench_main           throughput table: this implementation vs
 --                              the BLAKE2 reference C, same compiler and
