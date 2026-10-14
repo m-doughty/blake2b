@@ -464,8 +464,7 @@ Sources and SHA-256 digests are pinned in `tests/ref/SOURCES.md`.
 
 ## Status & roadmap
 
-Current version: **0.1.1-dev** (unreleased; the whole-stream theory is new
-in it). Last release: 0.1.0 (2026-10-07).
+Current version: **0.1.1** (2026-10-14). Previous release: 0.1.0 (2026-10-07).
 
 Next:
 - coverage-guided fuzzing, using AFL++'s GCC plugin built against

@@ -1,6 +1,6 @@
 name = "blake2b_tests"
 description = "Tests, proofs and benchmarks for blake2b"
-version = "0.1.1-dev"
+version = "0.1.1"
 
 authors = ["Matt Doughty"]
 maintainers-logins = ["m-doughty"]

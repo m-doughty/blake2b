@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 — 2026-10-14
 
 - **Corrected trusted base.** 0.1.0 declared `Blake2b.Core.Same`, `Same8`
   and `Same_Block` with `Import`, so GNATprove trusted them, and its README
