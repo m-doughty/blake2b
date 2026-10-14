@@ -421,6 +421,217 @@ package body Impl_Suite is
       end if;
    end Vectors;
 
+   --  Every way to cut one message into three pieces, empty ones
+   --  included: Init, Update (M (0 .. I - 1)), Update (M (I .. J - 1)),
+   --  Update (M (J .. L - 1)), Final, for every 0 <= I <= J <= L. Each
+   --  digest is checked against the digest of the whole message, which
+   --  the reference C, Monocypher and the specification must agree on
+   --  first (computed once per message: the oracles are not the subject
+   --  here, the cut points are). One pass per cut pair.
+   procedure Cut_Pairs (L : I64; KK : Key_Length; NN : Digest_Length) is
+      G        : Generator :=
+        Make (16#C07_9A12_0000_0000#
+              xor Shift_Left (U64 (L), 16) xor Shift_Left (U64 (KK), 8)
+              xor U64 (NN));
+      M        : constant Byte_Array := Random_Bytes (G, L);
+      K        : constant Byte_Array := Random_Bytes (G, KK);
+      Expected : constant Byte_Array := Oracles.Reference (M, K, NN);
+      Tag      : constant String :=
+        "cuts len=" & L'Image & " kk=" & KK'Image & " nn=" & NN'Image;
+      S        : Blake2b.Hashing.State;
+      Digest   : Byte_Array (0 .. NN - 1);
+   begin
+      Expect (Tag & ": Monocypher vs reference",
+              Oracles.Monocypher (M, K, NN), Expected);
+      Expect_Spec (Tag & ": reference", M, K, Expected);
+      for I in 0 .. L loop
+         for J in I .. L loop
+            Blake2b.Hashing.Init (S, NN, K);
+            Blake2b.Hashing.Update (S, M (0 .. I - 1));
+            Blake2b.Hashing.Update (S, M (I .. J - 1));
+            Blake2b.Hashing.Update (S, M (J .. L - 1));
+            Blake2b.Hashing.Final (S, Digest);
+            --  No message is built unless the case fails: there are
+            --  millions of them.
+            if Digest = Expected then
+               Pass;
+            else
+               Fail (Tag & " at" & I'Image & J'Image & ": got "
+                     & To_Hex (Digest) & " expected " & To_Hex (Expected));
+            end if;
+         end loop;
+      end loop;
+   end Cut_Pairs;
+
+   --  The lengths where a block boundary falls (with or without a key,
+   --  which takes the whole first block) and the ends of the range.
+   Cut_Lengths : constant array (Positive range <>) of I64 :=
+     [0, 1, 2, 63, 64, 65, 127, 128, 129, 191, 192, 193, 255, 256, 257,
+      300];
+   Cut_Keys    : constant array (1 .. 5) of Key_Length := [0, 1, 32, 63, 64];
+   Cut_Digests : constant array (1 .. 3) of Digest_Length := [1, 32, 64];
+
+   --  Max_Length bounds the exhaustive sweep (two key/digest pairs at
+   --  every length); the other key and digest lengths run on Cut_Lengths
+   --  up to Max_Subset.
+   procedure Cut_Point_Grid (Max_Length : I64; Max_Subset : I64) is
+   begin
+      Section ("implementation: Init, 3 Updates, Final at every pair of "
+               & "cut points, lengths 0.." & Max_Length'Image
+               & ", unkeyed nn=64 and kk=64 nn=32, vs reference C, "
+               & "Monocypher and the specification");
+      for L in I64 range 0 .. Max_Length loop
+         Cut_Pairs (L, 0, 64);
+         Cut_Pairs (L, 64, 32);
+      end loop;
+
+      Section ("implementation: every pair of cut points, lengths"
+               & " at block boundaries up to" & Max_Subset'Image
+               & " x 5 key lengths x 3 digest lengths (less the two "
+               & "pairs swept above)");
+      for L of Cut_Lengths loop
+         if L <= Max_Subset then
+            for KK of Cut_Keys loop
+               for NN of Cut_Digests loop
+                  --  Skip what the exhaustive sweep has done.
+                  if L > Max_Length
+                    or else not ((KK = 0 and then NN = 64)
+                                 or else (KK = 64 and then NN = 32))
+                  then
+                     Cut_Pairs (L, KK, NN);
+                  end if;
+               end loop;
+            end loop;
+         end if;
+      end loop;
+   end Cut_Point_Grid;
+
+   --  The block boundaries named explicitly, each message fed in fixed
+   --  patterns of pieces: whole, empty first or last, runs of empty
+   --  Updates, a lone first or last byte, cuts either side of the first
+   --  block edge, single bytes, and single bytes with an empty Update
+   --  after each. An empty piece is alternately a null slice of the
+   --  message at the current position and a null array at Index'Last.
+   procedure Boundaries is
+      type Piece_List is array (Positive range <>) of I64;
+
+      Lengths : constant array (1 .. 6) of I64 :=
+        [127, 128, 129, 255, 256, 257];
+      type Key_Digest is record
+         KK : Key_Length;
+         NN : Digest_Length;
+      end record;
+      Pairs   : constant array (1 .. 3) of Key_Digest :=
+        [(0, 64), (1, 1), (64, 32)];
+
+      Top_Empty : constant Byte_Array (Index'Last .. Index'Last - 1) :=
+        [others => 0];
+
+      procedure Check
+        (What   : String;
+         M, K   : Byte_Array;
+         NN     : Digest_Length;
+         Pieces : Piece_List;
+         Wanted : Byte_Array)
+      is
+         S       : Blake2b.Hashing.State;
+         Digest  : Byte_Array (0 .. NN - 1);
+         Pos     : I64 := 0;
+         Empties : Natural := 0;
+      begin
+         Blake2b.Hashing.Init (S, NN, K);
+         for N of Pieces loop
+            if N = 0 then
+               if Empties mod 2 = 0 then
+                  Blake2b.Hashing.Update (S, M (Pos .. Pos - 1));
+               else
+                  Blake2b.Hashing.Update (S, Top_Empty);
+               end if;
+               Empties := Empties + 1;
+            else
+               Blake2b.Hashing.Update (S, M (Pos .. Pos + N - 1));
+               Pos := Pos + N;
+            end if;
+         end loop;
+         if Pos /= M'Length then
+            Fail (What & ": the pieces cover" & Pos'Image & " of"
+                  & M'Length'Image & " bytes (harness error)");
+            return;
+         end if;
+         Blake2b.Hashing.Final (S, Digest);
+         Expect (What, Digest, Wanted);
+      end Check;
+
+   begin
+      Section ("implementation: block boundaries 127/128/129 and "
+               & "255/256/257 in fixed piece patterns, empty Updates, "
+               & "single bytes");
+      for L of Lengths loop
+         for P of Pairs loop
+            declare
+               G        : Generator :=
+                 Make (16#B0_0DA1_0000_0000# xor Shift_Left (U64 (L), 16)
+                       xor Shift_Left (U64 (P.KK), 8) xor U64 (P.NN));
+               M        : constant Byte_Array := Random_Bytes (G, L);
+               K        : constant Byte_Array := Random_Bytes (G, P.KK);
+               NN       : constant Digest_Length := P.NN;
+               Expected : constant Byte_Array := Oracles.Reference (M, K, NN);
+               Tag      : constant String :=
+                 "len=" & L'Image & " kk=" & P.KK'Image & " nn="
+                 & NN'Image;
+               Singles  : constant Piece_List (1 .. Natural (L)) :=
+                 [others => 1];
+               Spaced   : constant Piece_List (1 .. 2 * Natural (L)) :=
+                 [for I in 1 .. 2 * Natural (L) =>
+                    (if I mod 2 = 1 then 1 else 0)];
+            begin
+               Expect (Tag & ": Monocypher vs reference",
+                       Oracles.Monocypher (M, K, NN), Expected);
+               Expect_Spec (Tag & ": reference", M, K, Expected);
+
+               Check (Tag & " whole", M, K, NN, [1 => L], Expected);
+               Check (Tag & " empty first", M, K, NN, [0, L], Expected);
+               Check (Tag & " empty last", M, K, NN, [L, 0], Expected);
+               Check (Tag & " empty runs", M, K, NN,
+                      [0, 0, 0, L, 0, 0, 0], Expected);
+               Check (Tag & " lone first byte", M, K, NN, [1, L - 1],
+                      Expected);
+               Check (Tag & " lone last byte", M, K, NN, [L - 1, 1],
+                      Expected);
+               for Cut of Piece_List'[127, 128, 129] loop
+                  if Cut <= L then
+                     Check (Tag & " cut at" & Cut'Image & " with empty run",
+                            M, K, NN, [Cut, 0, 0, 0, L - Cut], Expected);
+                  end if;
+               end loop;
+               Check (Tag & " single bytes", M, K, NN, Singles, Expected);
+               Check (Tag & " single bytes, empty Update after each",
+                      M, K, NN, Spaced, Expected);
+            end;
+         end loop;
+      end loop;
+
+      --  The empty message: no Update at all, and only empty Updates.
+      for P of Pairs loop
+         declare
+            G        : Generator := Make (16#E3_0E00# + U64 (P.KK));
+            K        : constant Byte_Array := Random_Bytes (G, P.KK);
+            Expected : constant Byte_Array :=
+              Oracles.Reference (No_Bytes, K, P.NN);
+            Tag      : constant String :=
+              "len= 0 kk=" & P.KK'Image & " nn=" & P.NN'Image;
+         begin
+            Expect (Tag & ": Monocypher vs reference",
+                    Oracles.Monocypher (No_Bytes, K, P.NN), Expected);
+            Expect_Spec (Tag & ": reference", No_Bytes, K, Expected);
+            Check (Tag & " no Update", No_Bytes, K, P.NN, [1 .. 0 => 0],
+                   Expected);
+            Check (Tag & " only empty Updates", No_Bytes, K, P.NN,
+                   [0, 0, 0, 0, 0], Expected);
+         end;
+      end loop;
+   end Boundaries;
+
    --  With contracts compiled in, the typestate preconditions reject
    --  misuse instead of computing nonsense.
    procedure Misuse is
@@ -467,6 +678,8 @@ package body Impl_Suite is
      (Kat_Path     : String;
       Random_Count : Natural;
       Max_Length   : Natural;
+      Cut_Length   : Natural;
+      Cut_Subset   : Natural;
       Contracts    : Boolean) is
    begin
       RFC_Vector;
@@ -477,6 +690,8 @@ package body Impl_Suite is
       Odd_Bounds;
       Incremental (Random_Count / 5, Natural'Min (Max_Length, 2_000));
       Incremental_Model (Natural'Min (2_000, Random_Count / 5));
+      Cut_Point_Grid (I64 (Cut_Length), I64 (Cut_Subset));
+      Boundaries;
       Wiping;
       if Contracts then
          Misuse;

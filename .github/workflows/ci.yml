@@ -50,6 +50,16 @@ jobs:
         shell: bash
         working-directory: tests
         run: ./bin/profile-profile/bench_main
+      # Two streams longer than any Byte_Array (2**32 + 129 and 2**34 + 36
+      # bytes), hashed by Blake2b.Hashing and by both C oracles' own
+      # incremental interfaces; also runs the C state-layout size checks.
+      # Release profile, outside the build matrix because of its length.
+      - name: Long streams against both C oracles
+        shell: bash
+        working-directory: tests
+        run: |
+          alr -n build --release
+          ./bin/profile-profile/test_main --long
 
   prove:
     name: prove (${{ matrix.name }})

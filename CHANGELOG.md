@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+- **Corrected trusted base.** 0.1.0 declared `Blake2b.Core.Same`, `Same8`
+  and `Same_Block` with `Import`, so GNATprove trusted them, and its README
+  did not list them. They are now ordinary expression functions with the
+  same names and signatures, and GNATprove checks their `Logical_Equal`
+  annotation. `scripts/check-sources.sh` now forbids `Import` anywhere in
+  `src/`, not only in `Blake2b.Spec`.
+- **Whole-stream theory** (every declaration is Static ghost, so no code or
+  data is compiled; each of the four new object files holds only its
+  package's elaboration flag,
+  so that no library member lacks a symbol and macOS `ranlib` stays quiet;
+  no existing executable or public signature changes, and the seven
+  existing objects are unchanged). `Blake2b.Streaming` names a
+  logical message of up to 2^34 + 36 bytes as 14 sources of 2^32
+  bytes cut into ordered pieces. Its children give per-call lemmas
+  (`Theory`), the tie to `Spec.Hash` (`Consistency`) and a proved loop of
+  real `Init`, `Update` and `Final` calls (`Example.Run_Loop`) with a
+  full-length witness. This is per-call lemmas plus one proved loop, not a
+  single quantified theorem, and it claims nothing beyond 2^34 + 36 bytes.
+  The README states the scope.
+- `TRUST.md`: the trust register, listing the toolchain pins, the
+  specification, the hardening checks and the warning suppressions. No
+  entry is signed yet. `scripts/check-sources.sh` checks that it has one
+  row per warning suppression (a count).
+- Tests: every pair of cut points for messages of 0..300 bytes, with and
+  without a key, against both C oracles; two long streams (2^32 + 129 and
+  2^34 + 36 bytes) in the release profile (`test_main --long`), run by CI
+  on every platform.
+- Mutation suite: sixteen more mutants of the theory, a memory and time
+  guard, a step-margin check on the baseline, and a tainted outcome for
+  proofs the guard killed.
+
 ## 0.1.0 — 2026-10-07
 
 - First version: BLAKE2b (RFC 7693) in SPARK, with keyed and unkeyed

@@ -232,11 +232,13 @@ is
    --  message's start before the first cut and its end after the last.
    --  Repeated cuts give empty pieces.
    --
-   --  Message is one Byte_Array, so the theorem covers messages under
-   --  2**31 bytes: Spec.Hash's own domain. Longer streams (up to RFC
-   --  7693's 2**128 - 1 bytes) are still covered step by step, by the
-   --  Static postconditions of Update and Final, but no statement can name
-   --  their whole contents. See the README.
+   --  Message is one Byte_Array, so the theorem covers messages of at
+   --  most 2**31 bytes, Spec.Hash's own domain (the largest Byte_Array).
+   --  Longer streams are still covered step by step, by the Static
+   --  postconditions of Update and Final. For streams of up to 2**34 + 36
+   --  bytes cut into any pieces, Blake2b.Streaming states and proves the
+   --  whole-stream result; beyond that no statement names the whole
+   --  contents. See the README.
    type Cut_Points is array (Positive range <>) of I64
    with Ghost => Static;
 

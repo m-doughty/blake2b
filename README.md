@@ -1,7 +1,8 @@
 # blake2b
 
-**blake2b**: BLAKE2b (RFC 7693) in SPARK, proven to compute
-exactly what the RFC specifies.
+**blake2b**: BLAKE2b (RFC 7693) in SPARK, proven to compute exactly
+what an executable transcription of the RFC specifies, a transcription
+that is tested against independent implementations.
 
 - **Proven correct.** GNATprove proves that the mixing function G, every
   round, the compression function and both one-shot hash procedures
@@ -15,7 +16,7 @@ exactly what the RFC specifies.
 - **Proven free of run-time errors** (SPARK Silver) throughout: no
   overflow, no out-of-range index, no uninitialised read. Release builds
   therefore compile without run-time checks.
-- **The specification is tested, not trusted:** against the RFC's test
+- **The specification is tested, not proven:** against the RFC's test
   vector, the BLAKE2 team's 512 known answers, two independent C
   implementations, and HACL*'s formally verified BLAKE2b (through CPython
   3.14), over the key and digest lengths the published vectors leave out.
@@ -129,17 +130,96 @@ mentions `Has_Absorbed` with `Static =>`.
 
 **How far the end-to-end proof reaches.** `Has_Absorbed` and
 `Theorem_Incremental` name the whole message as one `Byte_Array`, so they
-cover messages under 2³¹ bytes (2 GiB). That's the same domain as
+cover messages of at most 2³¹ bytes (2 GiB). That's the same domain as
 `Spec.Hash` itself, and so the same as the one-shot proof. A stream
-absorbed in pieces can be longer, up to RFC 7693's 2¹²⁸ − 1 bytes. For
+absorbed in pieces can be longer, up to RFC 7693's 2¹²⁸ − 1 bytes (with
+a key, the key's padded 128-byte block counts, so 2¹²⁸ − 129 message bytes). For
 those streams every step is still proven:
 - each `Update` and the `Final` equal `Spec.Incremental`'s functions;
 - the 128-bit counter is exact, carry included.
 
-What no proof states for them is the end-to-end "this equals BLAKE2b of
-the whole stream", because no array can hold the whole stream to name it.
-That's a limit on what the proof can express, not evidence that longer
-streams hash differently: the code that runs is the same.
+For streams of up to 2³⁴ + 36 bytes (below) the end-to-end statement is
+proven as well. Beyond that no proof states "this equals BLAKE2b of the
+whole stream", because the proof has no name for it. That's a limit on
+what the proof can express, not evidence that longer streams hash
+differently: the code that runs is the same.
+
+### Streams longer than one array
+
+`Blake2b.Streaming` names a logical message of up to 2³⁴ + 36 bytes (the
+size RFC 9106 needs) as 14 sources of 2³² bytes each (all 14 are present, whatever their
+contents), cut into ordered pieces. A piece is a run of one source and may
+be empty; a schedule has at least one piece, so an empty message is one empty
+piece. The worked example `Run_Loop` also needs each piece to fit one
+`Byte_Array`, at most 2³¹ bytes; the model itself does not. Every
+declaration is `Ghost => Static`, so no code or data is compiled; each
+of the four units' object files holds only the package's elaboration flag
+(so that the library archive has no member without a symbol). What is
+proven:
+- **Per call** (`Blake2b.Streaming.Theory`): `Init`, each `Update` and
+  `Final` take the model of the incremental hash to the model of the
+  logical prefix absorbed so far, `Logical_After`. After the last piece,
+  `Final` gives `Logical_Hash`, RFC 7693's padded block fold of the whole
+  message: key block, counters, zero padding, final flag.
+- **Tied to the specification** (`Blake2b.Streaming.Consistency`):
+  whenever one `Byte_Array` holds the message, `Logical_Hash` is
+  `Spec.Hash`.
+- **A worked example** (`Blake2b.Streaming.Example.Run_Loop`): the real
+  `Init`, a loop of real `Update`s over any schedule of up to 2³¹ − 2
+  pieces, and the real `Final`, proven to give `Logical_Hash`. A witness
+  shows the example's preconditions hold at the full length, 2³⁴ + 36
+  bytes over 14 sources.
+
+Be exact about what this is. It is per-call lemmas plus one proved loop,
+not a single theorem quantified over every sequence of calls. The loop
+itself is bounded by the array that holds its schedule of pieces; the
+per-call lemmas put no bound on the number of calls. A client follows
+`Run_Loop`'s pattern in its own proof. The domain is the Argon2
+shape and nothing wider: for a stream past 2³⁴ + 36 bytes this claims
+nothing, and the counter's high word is zero throughout it, so it adds
+nothing to the 128-bit counter proof above. The proofs read
+`Blake2b.Hashing.Max_Input`'s private completion through proof visibility
+(true of GNATprove 16.1.0, not a language guarantee); if a toolchain stops
+doing so, the proofs fail rather than succeed wrongly. The model is not
+proven against the RFC; it is tied to `Spec.Hash`, which the tests check.
+
+A client reasons with the lemmas as `Run_Loop` does: chain each call's model
+with `Lemma_Update_Of`, which takes any context equal to the prefix's. This
+proves, in a client of 10 checks, that `Init`, one `Update` of the whole
+message and `Final` give `Logical_Hash` (add `use type Inc.Context;`, where
+`Inc` is `Blake2b.Spec.Incremental`, to see the context equality):
+
+```ada
+with Blake2b;                  use Blake2b;
+with Blake2b.Streaming;        use Blake2b.Streaming;
+with Blake2b.Streaming.Theory; use Blake2b.Streaming.Theory;
+
+procedure Hash_In_One_Piece
+  (Key    : Byte_Array;
+   C      : Contents;
+   M      : Pieces;
+   Length : Offset;
+   Data   : Byte_Array;
+   NN     : Digest_Length)
+with Ghost => Static, Global => null,
+     Pre => OK (Key, C, M, Length)
+            and then Data'Length = Length
+            and then Realizes (C, M, Length, 0, Data),
+     Post => Inc.Final (Inc.Update (Inc.Init (Key, NN), Data))
+             = Logical_Hash (Key, C, M, Length, NN)
+is
+   After_Init   : constant Inc.Context := Inc.Init (Key, NN);
+   After_Update : constant Inc.Context := Inc.Update (After_Init, Data);
+begin
+   Lemma_Init (Key, C, M, Length, NN);
+   Lemma_Update_Of (After_Init, Key, C, M, Length, 0, Data);
+   Lemma_Final_Of (After_Update, Key, C, M, Length);
+end Hash_In_One_Piece;
+```
+
+Chaining `Lemma_Append` and `Lemma_Init` directly does not prove, because
+the contexts are compared as values the provers do not see as one term;
+`Lemma_Update_Of` and `Lemma_Final_Of` exist for that.
 
 Two things to get right in your own proofs:
 - the last piece's `Joined` is the message itself, not a slice of all of
@@ -156,7 +236,7 @@ Two things to get right in your own proofs:
 | No run-time error anywhere in the library | **Proof** (SPARK Silver) |
 | `Init`, `Update`, `Final` each compute exactly their counterpart in `Spec.Incremental` | **Proof**, for every input up to RFC 7693's 2¹²⁸ − 1 bytes, the 128-bit counter's carry included; and tested |
 | The 128-bit counter adds correctly | **Proof** against arithmetic on mathematical integers, not only against the model |
-| Incremental hashing equals one-shot hashing, however the message is cut | **Proof** for every message one `Byte_Array` can hold, which is under 2³¹ bytes, `Spec.Hash`'s own domain (`Spec.Incremental`'s lemmas; `Theorem_Incremental` for the real procedures); and tested (22 000 random chunkings, plus one 1 MiB update). Beyond that, the steps are still proven equal to the model, but the theorem can't name the whole stream (see below) |
+| Incremental hashing equals one-shot hashing, however the message is cut | **Proof** for every message one `Byte_Array` can hold, which is at most 2³¹ bytes, `Spec.Hash`'s own domain (`Spec.Incremental`'s lemmas; `Theorem_Incremental` for the real procedures); and tested (22 000 random chunkings, plus one 1 MiB update). Beyond that, the steps are still proven equal to the model; for streams of up to 2³⁴ + 36 bytes cut into any pieces, per-call lemmas and a proved loop (`Blake2b.Streaming`) give the end-to-end statement. The tests hash many cuts of messages up to 300 bytes and two long streams (2³² + 129 and 2³⁴ + 36 bytes) against two C implementations; they do not run the ghost `Logical_Hash` |
 | The specification equals BLAKE2b | Tested: RFC vector, 512 known answers, two C implementations, 20 000 HACL* vectors |
 | Same digests at -O0, -O2, -O3, with checks off and on | Tested: build matrix |
 | Each layer catches the faults it should | Tested: mutation suite |
@@ -168,7 +248,11 @@ Why3 and the Z3, CVC5 and Alt-Ergo provers; the GNAT/GCC compiler; the
 Ada runtime, including GNATprove's model of the standard big-integer
 library, which is used only in proofs and compiled into no release
 build; and the specification itself, which is validated by the tests
-above, not proven. A proof shows the code equals the specification;
+above, not proven. [TRUST.md](TRUST.md) is the register of all of it, with the warning
+suppressions; it carries no signatures yet. Releases before 0.1.1 also
+trusted three imported ghost functions (`Blake2b.Core.Same`, `Same8`,
+`Same_Block`) that this list did not name; 0.1.1 replaces them with
+functions GNATprove checks. A proof shows the code equals the specification;
 only testing can show the specification equals BLAKE2b.
 
 **What the wipes promise.** The wipe postconditions are proved, but they
@@ -210,6 +294,8 @@ uses them restores the caller's values before returning.
     the context of `Before` followed by `Data`;
   - `Lemma_Final`: finishing the context of a message gives `Spec.Hash`
     of it.
+- `Blake2b.Streaming` (and its children `Theory`, `Consistency`, `Example`):
+  the whole-stream statement above, for streams longer than one array.
 - `Blake2b.Hashing`: `Init`, `Update` and `Final` are proved to compute
   exactly `Spec.Incremental`'s functions of `Model (S)`, a proof-only view
   of the state. `Theorem_Incremental` puts it all together: for every
@@ -219,8 +305,10 @@ uses them restores the caller's values before returning.
   they are the thing being proved, and an extensionality lemma turns
   element-wise array equality into logical equality, so each step
   composes into the next by substitution.
-- No `pragma Assume`, no justified checks, nothing skipped; CI enforces
-  this with `scripts/check-sources.sh`. Provers are bounded by steps, not
+- No `pragma Assume`, no justified checks, nothing skipped, no `Import`
+  anywhere in `src/`; CI enforces this with `scripts/check-sources.sh`,
+  which also checks that `TRUST.md` has one row per warning suppression
+  (a count, not a match of locations). Provers are bounded by steps, not
   time, so a proof result is the same on every machine.
 
 ## Building
@@ -252,13 +340,13 @@ Expected: `all checks proved`.
 ```sh
 cd tests
 alr build
-./bin/profile-profile/test_main       # about 300 000 checks
+./bin/profile-profile/test_main       # about 12.5 million checks
 cd ..
 scripts/matrix.sh                     # seven build configurations
-scripts/mutants.sh                    # fourteen deliberate faults
+scripts/mutants.sh                    # thirty deliberate faults
 scripts/check-hardening.sh            # wipes and scrubbing in object code
 scripts/check-constant-time.sh        # Linux x86-64, needs Valgrind headers
-scripts/check-sources.sh              # no proof escape hatches
+scripts/check-sources.sh              # no proof escape hatches (Import too)
 ```
 
 The suite checks:
@@ -271,7 +359,7 @@ The suite checks:
   20 000 with CPython 3.14, whose `hashlib.blake2b` is HACL*'s formally
   verified implementation (`scripts/cpython-vectors.py`), and checks the
   specification and the implementation against every one;
-- the two-part hash at every split point;
+- the two-part hash at a random split point of each of many messages;
 - arbitrary array bounds, including the top of the index range;
 - incremental hashing over random chunkings, against one-shot hashing
   and the C reference;
@@ -279,9 +367,10 @@ The suite checks:
   implementation against the model after every step;
 - wiping, and, in the contracts-enabled build, misuse being rejected.
 
-The mutation suite applies fourteen single-line faults to a scratch copy.
+The mutation suite applies thirty single-site faults to a scratch copy:
+fourteen in the code and its models, sixteen in the streaming theory.
 It checks that each is caught by the proof, the tests, or both, as
-expected:
+expected. The fourteen:
 - rotation constants, a schedule entry, an IV word, the parameter block,
   the final-block flag, the keyed counter, digest truncation, the
   last-block rule, and a fault in the specification;
@@ -294,6 +383,20 @@ expected:
 
   A carry only happens after 2^64 bytes, which no test can reach, and the
   tests execute their own copy of the model.
+
+The sixteen theory faults are proof-only, because no build compiles the
+theory. Each must leave an unproved check inside the unit named for it
+(the unit it mutates, except for the witness that shrinks the domain, which
+mutates `Blake2b.Streaming` and is judged in `Example`), and that check must fail within the step budget: a prover killed by the time or
+memory guard counts as tainted, not as a catch. They cover the counter, the
+key padding, the final flag, the buffer boundary, a lemma call removed, the
+worked example and the full-length witness. Before they run, every check of
+the theory must cost at most half its 10 000-step budget under its cheapest
+prover. Two known gaps: removing the `Lemma_Room` call in `Run_Loop` is not
+caught, because the provers see the private completion of
+`Blake2b.Hashing.Max_Input`; and ablating the padding fact at loop level
+exhausts time or memory rather than steps, so only the per-byte ablation is
+kept. The script is run by hand, locally and in the Linux images, not in CI.
 
 The constant-time gate marks key and message contents undefined for Valgrind
 Memcheck while their lengths stay public. It exercises both `Hash` overloads
@@ -361,7 +464,8 @@ Sources and SHA-256 digests are pinned in `tests/ref/SOURCES.md`.
 
 ## Status & roadmap
 
-Current version: **0.1.0** (2026-10-07).
+Current version: **0.1.1-dev** (unreleased; the whole-stream theory is new
+in it). Last release: 0.1.0 (2026-10-07).
 
 Next:
 - coverage-guided fuzzing, using AFL++'s GCC plugin built against

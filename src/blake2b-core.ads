@@ -63,9 +63,9 @@ is
    --  equal arrays into an opaque function such as Spec.Round. Same is
    --  interpreted as logical equality, which they substitute freely;
    --  Lemma_Same converts one into the other (array extensionality).
-   function Same (L, R : Words16) return Boolean
+   --  GNATprove checks the annotation against Same's body ("=" itself).
+   function Same (L, R : Words16) return Boolean is (L = R)
    with Ghost    => Static,
-        Import,
         Global   => null,
         Annotate => (GNATprove, Logical_Equal);
 
@@ -76,9 +76,8 @@ is
         Post   => Same (L, R);
 
    --  The same for chaining values and blocks.
-   function Same8 (L, R : Words8) return Boolean
+   function Same8 (L, R : Words8) return Boolean is (L = R)
    with Ghost    => Static,
-        Import,
         Global   => null,
         Annotate => (GNATprove, Logical_Equal);
 
@@ -88,9 +87,8 @@ is
         Pre    => L = R,
         Post   => Same8 (L, R);
 
-   function Same_Block (L, R : Block) return Boolean
+   function Same_Block (L, R : Block) return Boolean is (L = R)
    with Ghost    => Static,
-        Import,
         Global   => null,
         Annotate => (GNATprove, Logical_Equal);
 

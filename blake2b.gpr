@@ -96,6 +96,15 @@ project Blake2b is
       --  messages; the same larger budget.
       for Proof_Switches ("blake2b-spec-incremental.adb") use
         ("--steps=200000");
+      --  The streaming theory is split into small proof contexts, so it
+      --  is held to a stricter budget than the default: half of it.
+      for Proof_Switches ("blake2b-streaming.adb") use ("--steps=10000");
+      for Proof_Switches ("blake2b-streaming-theory.adb") use
+        ("--steps=10000");
+      for Proof_Switches ("blake2b-streaming-consistency.adb") use
+        ("--steps=10000");
+      for Proof_Switches ("blake2b-streaming-example.adb") use
+        ("--steps=10000");
    end Prove;
 
 end Blake2b;

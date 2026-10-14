@@ -9,12 +9,19 @@ package Impl_Suite is
    --  Random_Count seeded random cases of up to Max_Length bytes:
    --  100_000 of up to 4 KiB for the full suite, fewer and smaller for
    --  the contracts build, which executes every loop invariant.
+   --  Cut_Length: every way to cut a message into three pieces is hashed
+   --  for every length 0 .. Cut_Length (unkeyed with a 64-byte digest,
+   --  and with a 64-byte key and a 32-byte digest); Cut_Subset: the
+   --  other key and digest lengths get the same treatment at the block
+   --  boundary lengths up to it. 300 and 300 for the full suite.
    --  Contracts: the library was built with contracts enabled, so misuse
    --  (Update before Init, a wrong digest length) must be rejected.
    procedure Run
      (Kat_Path     : String;
       Random_Count : Natural;
       Max_Length   : Natural;
+      Cut_Length   : Natural;
+      Cut_Subset   : Natural;
       Contracts    : Boolean);
 
    --  Third oracle: checks the implementation AND the specification

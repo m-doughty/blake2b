@@ -1,6 +1,6 @@
 name = "blake2b"
-description = "BLAKE2b (RFC 7693) in SPARK, proven equal to the RFC specification"
-version = "0.1.0"
+description = "BLAKE2b (RFC 7693) in SPARK, proven against a tested specification"
+version = "0.1.1-dev"
 
 authors = ["Matt Doughty"]
 maintainers = ["Matt Doughty <matt@apogee.guru>"]
