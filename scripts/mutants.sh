@@ -12,22 +12,36 @@
 #   * the full test suite is rebuilt and re-run (T).
 # Each layer's outcome is one of:
 #   * yes: its log shows unproved checks, or failed tests (or an exception
-#     out of the mutated code); theory mutants are held to more (below);
+#     out of the mutated code); theory and counter mutants are held to
+#     more (below);
 #   * no: it passed;
-#   * TAINTED (proof only): the guard killed the proof, or (theory
-#     mutants) every unproved check failed only through a prover timeout,
-#     memory exhaustion or crash. Not a catch, and it fails the run;
+#   * TAINTED (proof only): the guard killed the proof, or (theory and
+#     counter mutants) every unproved check failed only through a prover
+#     timeout, memory exhaustion or crash. Not a catch, and it fails the
+#     run;
 #   * ERROR: it failed in some other way, which fails the run.
 # Every log is kept in .mutants/logs/, with each proof's results
 # (<name>.spark) and its guard record (<name>.guard).
 #
-# Every mutant lists the layers that must catch it. Three are caught by
-# the proof alone on purpose:
-#   * carry, plus-carry: a missing carry into the counter's high word
-#     (in the code, or in the model it is proved against) only matters
-#     after 2**64 bytes, which no test can reach;
+# Every mutant lists the layers that must catch it. One is caught by the
+# proof alone on purpose:
 #   * model-stale: the proof model must not see the leftover bytes past
 #     the buffered ones; the tests execute their own copy of the model.
+#
+# Counter mutants (carry, plus-carry) are proved in the counter's own
+# unit, Blake2b.Hashing.Counter_Arithmetic (Add_Counter and its contract):
+# carry mutates its body, plus-carry the model's Plus, which Add_Counter's
+# postcondition states. The counter lives in its own unit for this: the
+# unit has the default step budget (20000 in blake2b.gpr), while
+# blake2b-hashing.adb has 200000, and under that budget Alt-Ergo runs on
+# for hours on the false carry goal. The suite judges their proof as
+# strictly as the theory's (below), in the counter unit's own spec or
+# body. Unlike the theory, the counter unit is compiled code, so the
+# suite still builds the mutant and runs the tests, which must catch both
+# too: a missing carry only matters after 2**64 bytes, which no test
+# reaches through the public interface, but the test of the counter calls
+# Add_Counter and the model's Plus directly. A mutant that doesn't build
+# is an ERROR.
 #
 # Theory mutants (theory-*, example-*, witness-*) are proof-only: they
 # mutate the streaming theory (Blake2b.Streaming and its children Theory,
@@ -75,10 +89,12 @@
 #     Lemma_Pad_Byte instead, in a small proof context.
 #
 # The step margin. Whenever a theory mutant is selected, the baseline also
-# proves all four theory units, once with every prover and once with each
-# prover alone, and every check must cost at most STEP_MARGIN steps
-# (5000, half the theory's 10000-step budget in blake2b.gpr; not
-# configurable), or the baseline fails. A check's cost is the largest, over its VCs, of the
+# proves all four theory units, and whenever a counter mutant is selected,
+# the counter unit, once with every prover and once with each prover
+# alone, and every check must cost at most STEP_MARGIN steps (5000, half
+# the theory's 10000-step budget in blake2b.gpr and a quarter of the
+# counter unit's 20000; not configurable), or the baseline fails. A
+# check's cost is the largest, over its VCs, of the
 # fewest steps any prover needed for the VC: the cheapest prover's steps
 # (scripts/spark-proof.py margin). Not the steps of the prover GNATprove
 # credits when it races them all: that is whichever finishes first, which
@@ -150,6 +166,10 @@ THEORY_UNITS="blake2b-streaming.adb blake2b-streaming-theory.adb"
 THEORY_UNITS="$THEORY_UNITS blake2b-streaming-consistency.adb"
 THEORY_UNITS="$THEORY_UNITS blake2b-streaming-example.adb"
 
+# The 128-bit counter (Add_Counter), in its own unit under the default
+# step budget: compiled and tested, its mutants judged strictly.
+COUNTER_UNITS="blake2b-hashing-counter_arithmetic.adb"
+
 # name | file | exact text | replacement | unit to prove | must catch
 # In the text and its replacement, \n stands for a line break.
 MUTANTS=(
@@ -162,10 +182,10 @@ MUTANTS=(
   "truncation|src/blake2b-core.adb|(Byte (Shift_Right (H (Chain_Index (J / 8)),|(Byte (Shift_Right (H (Chain_Index (7 - J / 8)),|blake2b-core.adb|PT"
   "lazy-final|src/blake2b-hashing.adb|while Left > Block_Bytes loop|while Left >= Block_Bytes loop|blake2b-hashing.adb|PT"
   "spec-rotation|src/blake2b-spec.ads|VB2 : constant U64 := Rotate_Right (VB1 xor VC2, 63);|VB2 : constant U64 := Rotate_Right (VB1 xor VC2, 62);|blake2b-core.adb|PT"
-  "carry|src/blake2b-hashing.adb|Hi := Hi + 1;|Hi := Hi;|blake2b-hashing.adb|P"
+  "carry|src/blake2b-hashing-counter_arithmetic.adb|Hi := Hi + 1;|Hi := Hi;|blake2b-hashing-counter_arithmetic.adb|PT"
   "update-content|src/blake2b-hashing.adb|Data (Pos .. Pos + Left - 1);|[others => 0];|blake2b-hashing.adb|PT"
   "stream-model|src/blake2b-spec-incremental.ads|T       => (Lo => U64 (Block_Bytes * (DD - 1)), Hi => 0),|T       => (Lo => U64 (Block_Bytes * DD), Hi => 0),|blake2b-spec-incremental.adb|PT"
-  "plus-carry|src/blake2b-spec-incremental.ads|(Lo => Lo, Hi => (if Lo < N then T.Hi + 1 else T.Hi)));|(Lo => Lo, Hi => T.Hi));|blake2b-hashing.adb|P"
+  "plus-carry|src/blake2b-spec-incremental.ads|(Lo => Lo, Hi => (if Lo < N then T.Hi + 1 else T.Hi)));|(Lo => Lo, Hi => T.Hi));|blake2b-hashing-counter_arithmetic.adb|PT"
   "model-stale|src/blake2b-hashing.ads|(if J < S.Buf_Len then S.Buf (J) else 0)],|S.Buf (J)],|blake2b-hashing.adb|P"
   # The streaming theory (proof-only; see the header).
   "theory-fold-counter|src/blake2b-streaming-theory.ads|T_Lo => U64 (Block_Bytes * N),|T_Lo => U64 (Block_Bytes * (N + 1)),|blake2b-streaming-theory.adb|P"
@@ -188,6 +208,13 @@ MUTANTS=(
 
 is_theory () {    # $1 = unit to prove
   case " $THEORY_UNITS " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_counter () {   # $1 = unit to prove
+  case " $COUNTER_UNITS " in
     *" $1 "*) return 0 ;;
     *) return 1 ;;
   esac
@@ -369,10 +396,10 @@ proof_outcome () {   # $1 = exit status, $2 = log
   fi
 }
 
-# A theory mutant's proof, judged strictly (see the header) from its
-# results file. $1 = exit status, $2 = log, $3 = unit, $4 = results file
-# (may be empty), $5 = its judgement's log.
-theory_outcome () {
+# A theory or counter mutant's proof, judged strictly (see the header)
+# from its results file. $1 = exit status, $2 = log, $3 = unit, $4 =
+# results file (may be empty), $5 = its judgement's log.
+strict_outcome () {
   local reference=() status=0
   if [ "$1" -eq 0 ]; then
     echo no
@@ -411,13 +438,17 @@ test_outcome () {    # $1 = exit status, $2 = log
   fi
 }
 
-# The selected mutants, the units their proofs need, and whether any of
-# them needs the build and the tests (every mutant but the theory's).
+# The selected mutants, the units their proofs need, whether any of them
+# needs the build and the tests (every mutant but the theory's), and the
+# units whose step margin the baseline measures (the theory's when a
+# theory mutant is selected, the counter's when a counter mutant is).
 selected=()
 nselected=0
 units=""
 need_tests=0
 need_theory=0
+need_counter=0
+margin_units=""
 add_unit () {
   case " $units " in
     *" $1 "*) ;;
@@ -440,15 +471,22 @@ for entry in "${MUTANTS[@]}"; do
   else
     need_tests=1
   fi
+  if is_counter "$unit"; then
+    need_counter=1
+  fi
 done
 if [ "$nselected" -eq 0 ]; then
   echo "mutants: no mutant matched ONLY=$ONLY"
   exit 1
 fi
 if [ "$need_theory" -eq 1 ]; then
-  # The step margin needs every theory unit's baseline results.
-  for unit in $THEORY_UNITS; do add_unit "$unit"; done
+  margin_units="$margin_units $THEORY_UNITS"
 fi
+if [ "$need_counter" -eq 1 ]; then
+  margin_units="$margin_units $COUNTER_UNITS"
+fi
+# The step margin needs each measured unit's baseline results.
+for unit in $margin_units; do add_unit "$unit"; done
 
 # Every selected mutation site must occur exactly once in the sources,
 # before any time goes into the baseline.
@@ -498,8 +536,8 @@ for unit in $units; do
     cp "$spark" "$LOGS/baseline.${unit%.adb}.spark"
   fi
 done
-if [ "$need_theory" -eq 1 ]; then
-  for unit in $THEORY_UNITS; do
+if [ -n "$margin_units" ]; then
+  for unit in $margin_units; do
     for prover in $PROVERS; do
       prove_alone "$base" "$unit" "$prover" \
         "$LOGS/baseline.prove.$unit.$prover.log"
@@ -509,13 +547,15 @@ if [ "$need_theory" -eq 1 ]; then
       fi
     done
   done
+  # One call for every measured unit: it writes baseline.costs.json whole.
   # shellcheck disable=SC2086
   if ! "$PYTHON" -I "$SPARK_PROOF" margin "$STEP_MARGIN" \
        "$LOGS/baseline.costs.json" "$LOGS" "${PROVERS// /,}" \
-       $THEORY_UNITS > "$LOGS/baseline.margin.log" 2>&1; then
+       $margin_units > "$LOGS/baseline.margin.log" 2>&1; then
     sed 's/^/  /' "$LOGS/baseline.margin.log"
-    echo "  baseline fails the step margin: a theory check costs more than"
-    echo "  $STEP_MARGIN steps (see $LOGS/baseline.margin.log)"
+    echo "  baseline fails the step margin: a measured unit's check costs"
+    echo "  more than $STEP_MARGIN steps, or its results are unreadable"
+    echo "  (see $LOGS/baseline.margin.log)"
     exit 2
   fi
   sed 's/^/  /' "$LOGS/baseline.margin.log"
@@ -570,7 +610,7 @@ for entry in "${selected[@]}"; do
       caught_p=TAINTED
       echo "  guard fired: $GUARD_FIRED"
     else
-      caught_p=$(theory_outcome "$PROVE_STATUS" "$LOGS/$name.prove.log" \
+      caught_p=$(strict_outcome "$PROVE_STATUS" "$LOGS/$name.prove.log" \
                    "$unit" "$spark" "$LOGS/$name.judge.log")
       [ ! -f "$LOGS/$name.judge.log" ] \
         || sed 's/^/  /' "$LOGS/$name.judge.log"
@@ -584,10 +624,20 @@ for entry in "${selected[@]}"; do
   else
     guarded_prove "$dir" "$unit" "$LOGS/$name.prove.log" "$LOGS/$name.guard"
     spark=$(spark_file "$dir" "$unit")
-    [ -z "$spark" ] || cp "$spark" "$LOGS/$name.spark"
+    if [ -n "$spark" ]; then
+      cp "$spark" "$LOGS/$name.spark"
+      spark="$LOGS/$name.spark"
+    fi
     if [ -n "$GUARD_FIRED" ]; then
       caught_p=TAINTED
       echo "  guard fired: $GUARD_FIRED"
+    elif is_counter "$unit"; then
+      # Caught by the proof alone (must: P): judged as strictly as the
+      # theory (see the header). The tests still run, below.
+      caught_p=$(strict_outcome "$PROVE_STATUS" "$LOGS/$name.prove.log" \
+                   "$unit" "$spark" "$LOGS/$name.judge.log")
+      [ ! -f "$LOGS/$name.judge.log" ] \
+        || sed 's/^/  /' "$LOGS/$name.judge.log"
     else
       caught_p=$(proof_outcome "$PROVE_STATUS" "$LOGS/$name.prove.log")
     fi

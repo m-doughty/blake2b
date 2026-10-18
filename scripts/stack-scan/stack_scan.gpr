@@ -1,0 +1,28 @@
+--  The measurement driver of scripts/check-stack-scan.sh. The script
+--  builds it, in a scratch directory, against copies of the library; it is
+--  not part of the library.
+
+with "config/stack_scan_config.gpr";
+with "blake2b.gpr";
+
+project Stack_Scan is
+
+   for Languages use ("Ada");
+   for Source_Dirs use ("src/");
+   for Create_Missing_Dirs use "True";
+   for Object_Dir use "obj/" & Stack_Scan_Config.Build_Profile;
+   for Exec_Dir use "bin/";
+   for Main use ("stack_scan.adb");
+
+   --  The same switches in every profile: the driver's own code is not
+   --  what is measured (the library keeps its release profile's switches).
+   package Compiler is
+      for Default_Switches ("Ada") use
+        ("-O2", "-gnat2022", "-gnatW8", "-gnatwa", "-gnatw.X", "-gnatwe");
+   end Compiler;
+
+   package Binder is
+      for Switches ("Ada") use ("-Es"); --  Symbolic traceback
+   end Binder;
+
+end Stack_Scan;

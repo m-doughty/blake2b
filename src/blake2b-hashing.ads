@@ -263,21 +263,30 @@ private
    use type U64;
 
    --  Hardening for the subprograms that handle keys and input: GCC's
-   --  stack scrubbing (the stack the call and its callees used is zeroed
-   --  on return), and zeroing of every call-used register on return.
+   --  stack scrubbing (the stack of the body it wraps is zeroed on return; the
+   --  frames of callees outside the body, such as memcpy and the wipe
+   --  routines, are not), and zeroing of every call-used register on
+   --  return.
    --  "all", not "used": "used" clears only the registers the subprogram
    --  itself used, and leaves whatever its callees (the compression
-   --  function) left in the others. scripts/check-hardening.sh checks the
-   --  object code. See Blake2b.Wipe.
+   --  function) left in the others. "flatten" pulls the compression
+   --  function (Inline_Always in Blake2b.Core) and every helper into the
+   --  scrubbed body: strub scrubs only the stack of the body it wraps, so
+   --  a compression function left out of line would keep its message
+   --  words and working vector in a frame nothing scrubs.
+   --  scripts/check-hardening.sh checks the object code. See Blake2b.Wipe.
    pragma Warnings
      (GNATprove, Off, "pragma ""Machine_Attribute"" ignored*",
       Reason => "code-generation attribute: no effect on proof");
    pragma Machine_Attribute (Init, "strub", "internal");
    pragma Machine_Attribute (Init, "zero_call_used_regs", "all");
+   pragma Machine_Attribute (Init, "flatten");
    pragma Machine_Attribute (Update, "strub", "internal");
    pragma Machine_Attribute (Update, "zero_call_used_regs", "all");
+   pragma Machine_Attribute (Update, "flatten");
    pragma Machine_Attribute (Final, "strub", "internal");
    pragma Machine_Attribute (Final, "zero_call_used_regs", "all");
+   pragma Machine_Attribute (Final, "flatten");
    pragma Warnings
      (GNATprove, On, "pragma ""Machine_Attribute"" ignored*");
 

@@ -1,0 +1,17 @@
+name = "stack_scan"
+description = "Stack left by blake2b's hardened subprograms on return"
+version = "0.0.0"
+licenses = "BSD-3-Clause"
+executables = ["stack_scan"]
+
+# The library two directories up: scripts/check-stack-scan.sh copies the
+# crate and this driver into a scratch directory with the same layout and
+# builds them there, so the pin resolves to that copy.
+[[depends-on]]
+blake2b = "*"
+
+[[pins]]
+blake2b = { path = "../.." }
+
+[build-switches]
+"*".ada_version = "Ada2022"

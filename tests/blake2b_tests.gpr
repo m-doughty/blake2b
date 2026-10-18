@@ -24,6 +24,13 @@ project Blake2b_Tests is
       --  evaluates the ghost specification.
       for Default_Switches ("Ada") use
         Blake2b_Tests_Config.Ada_Compiler_Switches & ("-gnata");
+      --  Except the window onto the counter's private unit: its Add_Counter
+      --  is Inline_Always, so with -gnata its contract, written with the
+      --  ghost big integers that the library's profiles do not compile,
+      --  would be expanded here and fail to link. The suite checks the same
+      --  property against Ada's big integers itself.
+      for Switches ("blake2b-hashing-counter_testing.adb") use
+        Blake2b_Tests_Config.Ada_Compiler_Switches;
       --  The oracles are third-party code, compiled as published, at the
       --  library's release optimisation level so that the benchmark
       --  compares like with like (same compiler, same -O3, no -march).

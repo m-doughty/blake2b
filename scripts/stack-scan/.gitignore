@@ -1,0 +1,6 @@
+# Alire and gprbuild outputs, if the driver is built here by hand
+# (scripts/check-stack-scan.sh builds a copy of it elsewhere).
+/obj/
+/bin/
+/alire/
+/config/

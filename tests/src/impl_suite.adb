@@ -4,10 +4,13 @@
 pragma Assertion_Policy (Check);
 
 with Ada.Assertions; use Ada.Assertions;
+with Ada.Numerics.Big_Numbers.Big_Integers;
+use Ada.Numerics.Big_Numbers.Big_Integers;
 with Interfaces;     use Interfaces;
 
 with Blake2b;         use Blake2b;
 with Blake2b.Hashing;
+with Blake2b.Hashing.Counter_Testing;
 with Blake2b.Hashing.Testing;
 with Blake2b.Spec;
 with Blake2b.Spec.Incremental;
@@ -674,6 +677,92 @@ package body Impl_Suite is
       end;
    end Misuse;
 
+   --  The 128-bit counter's addition, called directly (through the public
+   --  interface a carry takes 2**64 bytes), and the model's Plus: fixed
+   --  cases worked out by hand at and around the carry, then random
+   --  cases checked against arithmetic on mathematical integers.
+   procedure Counter_Carry (Count : Natural) is
+      package Inc renames Blake2b.Spec.Incremental;
+      use type Inc.Counter;
+      package Words is new Unsigned_Conversions (U64);
+      Two_64 : constant Big_Integer := Words.To_Big_Integer (U64'Last) + 1;
+      Top    : constant U64 := U64'Last;
+
+      --  (Hi, Lo) + N must give (Hi2, Lo2), from Add_Counter and Plus.
+      procedure Case_Of (Hi, Lo, N, Hi2, Lo2 : U64) is
+         H : U64 := Hi;
+         L : U64 := Lo;
+         Name : constant String :=
+           "(" & Hi'Image & "," & Lo'Image & ") +" & N'Image;
+      begin
+         Blake2b.Hashing.Counter_Testing.Add_Counter (H, L, N);
+         if H = Hi2 and then L = Lo2 then
+            Pass;
+         else
+            Fail ("Add_Counter " & Name & ": got (" & H'Image & ","
+                  & L'Image & ")");
+         end if;
+         begin
+            pragma Assert
+              (Inc.Plus ((Lo => Lo, Hi => Hi), N) = (Lo => Lo2, Hi => Hi2));
+            Pass;
+         exception
+            when Assertion_Error =>
+               Fail ("Plus " & Name & " /= (" & Hi2'Image & ","
+                     & Lo2'Image & ")");
+         end;
+      end Case_Of;
+
+      G : Generator := Make (16#C0_7E_C4_44#);
+   begin
+      Section ("implementation and model: the 128-bit counter's carry");
+      Case_Of (0, 0, 128, 0, 128);
+      Case_Of (3, 5, 0, 3, 5);
+      Case_Of (0, Top, 1, 1, 0);
+      Case_Of (0, Top - 127, 128, 1, 0);
+      Case_Of (0, Top, 128, 1, 127);
+      Case_Of (7, Top - 1, 1, 7, Top);
+      Case_Of (7, Top - 1, 2, 8, 0);
+      Case_Of (3, 2**63, 2**63, 4, 0);
+      Case_Of (Top - 1, Top, 1, Top, 0);
+      Case_Of (Top - 1, Top, Top, Top, Top - 1);
+      for I in 1 .. Count loop
+         declare
+            Hi, Lo, N : U64;
+            H, L      : U64;
+         begin
+            Next (G, Hi);
+            Hi := Hi mod Top;            --  so that no sum reaches 2**128
+            Next (G, Lo);
+            if I mod 2 = 0 then          --  half of them near the carry
+               Lo := Top - Below (G, 256);
+            end if;
+            N := (if I mod 3 = 0 then Below (G, 257) else 128);
+            H := Hi;
+            L := Lo;
+            Blake2b.Hashing.Counter_Testing.Add_Counter (H, L, N);
+            if Words.To_Big_Integer (H) * Two_64 + Words.To_Big_Integer (L)
+               = Words.To_Big_Integer (Hi) * Two_64
+                 + Words.To_Big_Integer (Lo) + Words.To_Big_Integer (N)
+            then
+               Pass;
+            else
+               Fail ("Add_Counter: (" & Hi'Image & "," & Lo'Image & ") +"
+                     & N'Image & " gave (" & H'Image & "," & L'Image & ")");
+            end if;
+            begin
+               pragma Assert
+                 (Inc.Plus ((Lo => Lo, Hi => Hi), N) = (Lo => L, Hi => H));
+               Pass;
+            exception
+               when Assertion_Error =>
+                  Fail ("Plus: (" & Hi'Image & "," & Lo'Image & ") +"
+                        & N'Image & " /= Add_Counter's result");
+            end;
+         end;
+      end loop;
+   end Counter_Carry;
+
    procedure Run
      (Kat_Path     : String;
       Random_Count : Natural;
@@ -693,6 +782,7 @@ package body Impl_Suite is
       Cut_Point_Grid (I64 (Cut_Length), I64 (Cut_Subset));
       Boundaries;
       Wiping;
+      Counter_Carry (Natural'Min (10_000, Random_Count));
       if Contracts then
          Misuse;
       end if;

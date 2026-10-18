@@ -133,13 +133,17 @@ is
         Post   => V = Spec.Round (V'Old, M, Spec.Round_Number (R));
 
    --  Section 3.2: the compression function F, updating H in place.
+   --  Inline_Always, so that its message words and working vector live in
+   --  the scrubbed frame of the hardened subprogram that calls it (see
+   --  Blake2b.Hashing).
    procedure Compress
      (H    : in out Words8;
       B    : Block;
       T_Lo : U64;
       T_Hi : U64;
       Last : Boolean)
-   with Global => null,
+   with Inline_Always,
+        Global => null,
         Post   => H = Spec.Compress (H'Old, B, T_Lo, T_Hi, Last);
 
 end Blake2b.Core;

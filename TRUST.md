@@ -50,7 +50,7 @@ against constructs the gate does not name.
   as the language defines it, and GNATprove 16.1.0 implements SPARK's
   semantics, so a proof of the source is a proof about the compiled program.
   gprbuild 26.0.1 and Alire 2.1.1 build what the sources say.
-- **Why believed:** the pinned versions run the whole test suite (12,513,543
+- **Why believed:** the pinned versions run the whole test suite (12,533,563
   checks) at -O0, -O2 and -O3, with checks off and on, and the digests agree
   with two independent C implementations and HACL\*.
 - **If false:** a proof could hold for a program the compiler does not
@@ -73,9 +73,14 @@ against constructs the gate does not name.
   (whose runtime bodies are `SPARK_Mode => Off`; four conversions are skipped
   in `Blake2b.Hashing`'s analysis) agrees with mathematical integers.
 - **Why believed:** it is the standard library's own SPARK model. The
-  128-bit counter is proved against it, and the mutation suite shows the proof
-  catches a missing carry past 2⁶⁴ (`carry`, `plus-carry`), which no test can
-  reach.
+  128-bit counter is proved against it, and the mutation suite shows the
+  proof catches a missing carry past 2⁶⁴ (`carry`, `plus-carry`), which no
+  test through the public interface can reach (it takes 2⁶⁴ bytes); a test
+  calls the counter's addition and the model's `Plus` directly and checks
+  them against Ada's big integers. The counter is proved in a unit of its own,
+  `Blake2b.Hashing.Counter_Arithmetic`, under the default step budget, and
+  both mutants leave the counter's postcondition unproved there within it
+  (up to 0.1.1 they ran past every memory guard and were never caught).
 - **If false:** the counter and length claims in ghost code could be about
   the wrong numbers.
 - **Scope:** ghost code only. It is compiled into no release build (the
@@ -93,22 +98,66 @@ against constructs the gate does not name.
   testing shows spec equals BLAKE2b.
 
 ### H-1 Wiping, registers and stack
-- **Proposition:** after `Final`, `Clear` and the one-shot `Hash`, no copy of
-  the key, chaining value or block that the library holds survives in the
-  state, in a register, or on the stack. The caller's own key array is not
-  erased by these calls.
+- **Proposition:** after `Final` and `Clear`, no copy of the key, chaining
+  value or block that the library holds survives in the state; after a
+  normal return of `Init`, `Update`, `Final` and the one-shot `Hash`, none
+  survives as a whole word on the stack below the caller; and none survives
+  in a call-used register when `Init`, `Update`, `Final` or `Digest_Of`'s
+  scrubbed body returns (the `Hash` wrappers then only release that body's
+  stack, and their own registers are not checked). The caller's own key
+  array is not erased by these calls.
 - **What is proved:** the wipe postconditions say the secret-bearing fields
   of the state (chaining value, buffered block, counters) are zero; the
   phase and the output length are kept, and `Final` sets the phase to
   finalized. That is about the value of an object only.
 - **What is checked, not proved:** `Sanitize_*` are never inlined and are
-  `noipa`; `Init`, `Update`, `Final` and `Digest_Of` carry `strub` and
-  `zero_call_used_regs ("all")`; `scripts/check-hardening.sh` checks the
-  object code of each hardened entry point. Callee-saved registers are not
-  zeroed (the ABI restores them).
+  `noipa`; `Init`, `Update`, `Final` and `Digest_Of` carry `strub`,
+  `zero_call_used_regs ("all")` and `flatten`, and `Core.Compress` is
+  `Inline_Always`, so that the compression function's message words and
+  working vector lie inside a scrubbed frame (`strub` scrubs only the body
+  it wraps; up to 0.1.1 the compression function was a function of its own
+  and one message word could remain in its frame after a normal return).
+  `scripts/check-hardening.sh` checks the object code: strub clones,
+  registers cleared at every return, no other function defined in
+  `blake2b-hashing.o` but the accessors that handle no secret, no
+  `Compress` symbol or call, no function in the counter's object
+  (`Add_Counter` is `Inline_Always` too); `flatten` is checked in the source, its
+  strings compared exactly (the object cannot show it missing at `-O3
+  -gnatn`); any undefined reference outside the listed classes fails, and so
+  does a jump out of an entry point, wrapper or clone (except into its own
+  cold part) or out of a cold part, an indirect jump, and a function that
+  runs off its end. `scripts/check-stack-scan.sh`
+  measures the stack after a normal return in 26 scenarios and fails on any
+  value left, against controls that do leave values. The C library's
+  `memcpy`, `memmove` and `memset` are called from inside the entry points
+  (allowed and listed: they run inside the call, whose return zeroes every
+  call-used register). Callee-saved registers are not zeroed (the ABI
+  restores them). `strub` scrubs the stack of the body it wraps, not the
+  frames of callees outside it (the libc routines, the wipe routines): the
+  evidence that they hold nothing is that the stack scan finds no canary
+  below the caller. Its region is at least 24 KiB and is doubled while the
+  deepest non-zero byte it finds is near its end; it does not show that
+  every byte the call wrote was read.
+- **Not claimed:** the stack after an exception or a task abort (measured
+  and reported, not gated: values do remain after an exception); `Clear`
+  (no `strub`; it reads no secret); the one-shot `Hash` wrappers, which are
+  not hardened themselves (they call `Digest_Of`, which is); registers outside the
+  compiler's target description (on Linux x86-64 with AVX-512 the C
+  library's `memcpy` may use `ymm16`-`ymm31`, which baseline x86-64 does not
+  name; on AArch64 the upper halves of `v8`-`v15`; inferred, not measured);
+  partial words and derived values, which the scan's whole-word canaries do
+  not recognise; the registers of the one-shot `Hash` wrappers after
+  `Digest_Of` returns (they hold stack addresses, not secrets, in the
+  shipped macOS arm64 object; not checked on other targets); the x86-64 red
+  zone (argued in the scan's header, not measured); a compiler or target
+  outside the build matrix. The allow-lists in `check-hardening.sh` were
+  derived on macOS arm64 and first checked on the other platforms by CI.
 - **If false:** key-derived bytes could remain in memory the library no
   longer controls.
-- **Scope:** the compiler and target in the build matrix.
+- **Scope:** the compiler and target in the build matrix, in the release
+  profile (checks and contracts off), which is what the object check and the
+  stack scan read. A contracts-enabled build runs the specification
+  (`Spec.Hash`, `Spec.Compress`) on the secrets in frames nothing scrubs.
 
 ### W-1 to W-3 `Machine_Attribute` ignored (GNATprove)
 - **Locations:** `src/blake2b-hashing.ads` (`Init`, `Update`, `Final`),

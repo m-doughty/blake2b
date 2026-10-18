@@ -46,6 +46,15 @@ jobs:
       - name: Hardening present in release objects
         shell: bash
         run: bash scripts/check-hardening.sh
+      - name: The hardening gate fails when each hardening is removed
+        shell: bash
+        run: bash scripts/test-check-hardening-negative.sh
+      - name: Stack scan (nothing left after a normal return of a hardened call)
+        shell: bash
+        run: bash scripts/check-stack-scan.sh
+      - name: The stack scan fails when the hardening is removed
+        shell: bash
+        run: bash scripts/test-check-stack-scan.sh
       - name: Benchmark (reported, not gated)
         shell: bash
         working-directory: tests
@@ -100,7 +109,7 @@ jobs:
         run: bash scripts/check-sources.sh --self-test
       - name: The register-clearing parser reads GNU and LLVM objdump on x86-64 and AArch64
         run: bash scripts/test-zeroed-at-return.sh
-      - name: Disassembler flags preserve GNU functions and LLVM aliases
+      - name: The hardening gate reads GNU and LLVM objdump, stray helpers, cold parts and a non-GCC probe
         run: bash scripts/test-check-hardening-disassembler.sh
       - name: Constant-time report checker rejects unexpected memory and secret-use errors
         run: python3 scripts/test-ct-valgrind.py

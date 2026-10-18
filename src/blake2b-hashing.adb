@@ -2,6 +2,7 @@
 --  SPDX-License-Identifier: BSD-3-Clause
 
 with Blake2b.Core;
+with Blake2b.Hashing.Counter_Arithmetic;
 with Blake2b.Wipe;
 
 package body Blake2b.Hashing
@@ -82,6 +83,7 @@ is
    --  the spec's private part).
    pragma Machine_Attribute (Digest_Of, "strub", "internal");
    pragma Machine_Attribute (Digest_Of, "zero_call_used_regs", "all");
+   pragma Machine_Attribute (Digest_Of, "flatten");
    pragma Warnings
      (GNATprove, On, "pragma ""Machine_Attribute"" ignored*");
 
@@ -184,33 +186,7 @@ is
    package Inc renames Spec.Incremental;
    use type Inc.Counter;
 
-   function Value (Hi, Lo : U64) return Big_Natural is
-     (Big.Word (Hi) * Two_64 + Big.Word (Lo))
-   with Ghost;
-
-   --  (Hi, Lo) := (Hi, Lo) + N: the 128-bit counter, carry included. Its
-   --  contract states the addition twice, as arithmetic on mathematical
-   --  integers and as the model's Plus (the reference implementation's
-   --  increment), so a carry mistake in either one fails the proof.
-   procedure Add_Counter (Hi, Lo : in out U64; N : U64)
-   with Global => null,
-        Pre    => Value (Hi, Lo) + Big.Word (N) < Two_128,
-        Post   =>
-          (Executable =>
-             Value (Hi, Lo) = Value (Hi'Old, Lo'Old) + Big.Word (N)
-             and then (if N mod Block_Bytes = 0
-                         and then Lo'Old mod Block_Bytes = 0
-                       then Lo mod Block_Bytes = 0),
-           Static     =>
-             Lo = Inc.Plus ((Lo => Lo'Old, Hi => Hi'Old), N).Lo
-             and then Hi = Inc.Plus ((Lo => Lo'Old, Hi => Hi'Old), N).Hi)
-   is
-   begin
-      Lo := Lo + N;
-      if Lo < N then
-         Hi := Hi + 1;
-      end if;
-   end Add_Counter;
+   use Counter_Arithmetic;
 
    --  Valid states the input limit in 64-bit arithmetic; this lemma says
    --  it is the mathematical one: (Hi, Lo) + Len <= 2**128 - 1 exactly

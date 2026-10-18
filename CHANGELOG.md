@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased
+
+- **Compression frame scrubbed.** After a normal return of `Init`, `Update`,
+  `Final` or the one-shot `Hash`, one message word could remain on the stack
+  in the frame of `Blake2b.Core.Compress`: GCC's `strub` scrubs only the
+  stack of the body it wraps, and the compression function was a function
+  of its own. `Compress` is now `Inline_Always` and the four hardened entry
+  points are `flatten`ed, so its frame lies inside the scrubbed body. No
+  contract or proof changed. Measured on macOS arm64: bulk data about
+  3-4% faster, 64 bytes about 6.5% slower, `blake2b-hashing.o` about six
+  times larger.
+- **Hardening gates strengthened.** `scripts/check-hardening.sh` now also
+  reads `blake2b-core.o`, fails on any function in `blake2b-hashing.o` other
+  than the entry points, their clones and the accessors that handle no
+  secret, fails if `Compress` has a symbol or is called, and checks in the
+  source that each entry point has `strub`, `zero_call_used_regs` and
+  `flatten` (the attribute strings are compared exactly: GCC ignores
+  `"Flatten"`); `memcpy`, `memmove` and `memset` are allowed and listed; any
+  other undefined reference fails; a jump out of an entry point, a wrapper
+  or a clone fails unless it goes into its own cold part (by name, or by its
+  own cold section in a relocation record), and a cold part may jump
+  nowhere; an indirect jump, a jump whose relocation names the function
+  itself, and a function that runs off its end (its last instruction is not
+  a return, a jump, a call or a trap) fail too; a returning cold part of a
+  function whose returns are checked must clear the registers. The
+  register-clearing parser tracks later writes, register widths and branch
+  targets: the old one accepted a register written again after its clear,
+  a narrow clear and a clear on a skipped branch. New:
+  `scripts/test-check-hardening-negative.sh` (the gate fails when a
+  hardening is removed), `scripts/check-stack-scan.sh` (26 scenarios, any
+  canary word left after a normal return fails, each against a control) and
+  `scripts/test-check-stack-scan.sh`. CI runs them on all four platforms.
+
+- **Carry mutants caught.** The 128-bit counter's addition moves to a
+  private unit of its own, `Blake2b.Hashing.Counter_Arithmetic`
+  (`Inline_Always`, contract unchanged), proved under the default step
+  budget. Under `blake2b-hashing.adb`'s ten-times-larger budget Alt-Ergo
+  ran on for hours on the false goal of the mutants `carry` and
+  `plus-carry`, past every memory guard, so neither had ever been shown
+  caught; both now are, judged as strictly as the theory mutants, and the
+  new unit is in the step-margin measurement. A new test calls the
+  counter's addition and the model's `Plus` directly, at and around the
+  carry and on 10,000 random cases checked against Ada's big integers, so
+  the tests catch both mutants too. `scripts/check-hardening.sh`
+  fails if the counter's object defines any function, with two new
+  negative controls.
+
 ## 0.1.1 — 2026-10-14
 
 - **Corrected trusted base.** 0.1.0 declared `Blake2b.Core.Same`, `Same8`

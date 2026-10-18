@@ -242,6 +242,7 @@ Two things to get right in your own proofs:
 | Each layer catches the faults it should | Tested: mutation suite |
 | No branch or memory index depends on key or message in the exercised cases | Tested: Valgrind memcheck on isolated plain and hardened builds, with deliberate secret-branch controls (Linux x86-64 CI) |
 | State is wiped by `Final` and `Clear` | Proof (postconditions) and test; wipes checked present in release object code |
+| After a normal return of `Init`, `Update`, `Final` or `Hash`, no key, message or chaining-value word is left on the stack | Tested: stack scan (26 scenarios, each against a control that does leave canaries), and checked in object code. Not proved; exceptions and task abort are not claimed |
 
 **What the proof rests on** (the trusted base): GNATprove 16.1.0 with
 Why3 and the Z3, CVC5 and Alt-Ergo provers; the GNAT/GCC compiler; the
@@ -261,7 +262,20 @@ register or on the stack is addressed separately, and checked in object
 code rather than proved:
 - wipe routines that are never inlined and never subject to
   interprocedural analysis;
-- GCC stack scrubbing (`strub`) of everything the call used;
+- GCC stack scrubbing (`strub`) of the body it wraps. `strub` scrubs only
+  that stack, not the frames of callees outside the body (`memcpy`,
+  `memmove`, `memset`, the wipe routines; the stack scan below finds no
+  canary in them, which is the only evidence), so the compression function
+  is `Inline_Always` and the four hardened entry points are `flatten`ed:
+  its message words and working vector live in the scrubbed frame. (Up to
+  0.1.1 it was a function of its own, and one message word could remain in
+  its frame after a normal return.) `scripts/check-hardening.sh` fails if
+  any function other than the entry points, their clones and the
+  accessors that handle no secret is defined in `blake2b-hashing.o`, or if
+  `Compress` has a symbol or is called. The leaf C library routines
+  `memcpy`, `memmove` and `memset` may still be called from inside an
+  entry point; they run inside the call, whose return zeroes every
+  call-used register, and are listed by the check;
 - zeroing of **every** call-used register on return
   (`zero_call_used_regs ("all")`), including those only the compression
   function used. `"used"` would clear only the entry point's own
@@ -272,6 +286,46 @@ code rather than proved:
 
 Callee-saved registers aren't zeroed: by the ABI, every function that
 uses them restores the caller's values before returning.
+
+The register claim is for the registers the compiler's target description
+names, which is what `zero_call_used_regs` zeroes and what the check reads.
+Registers outside that view are not covered: on Linux x86-64 with AVX-512,
+the C library's `memcpy` and `memmove` may use `ymm16`-`ymm31`, which the
+baseline x86-64 target does not name, so key or message bytes copied by them
+could remain there (inferred, not measured); on AArch64 the upper halves of
+`v8`-`v15` are neither zeroed nor restored (the shipped object uses none of
+them). The claim covers the release profile (checks and contracts off). A
+contracts-enabled build evaluates the specification on the secrets, outside
+the scrubbed bodies, and is for testing only.
+
+**What is measured, and what is not claimed.** `scripts/check-stack-scan.sh`
+fills key, message and chaining-value words with recognisable values,
+calls each entry point (one-shot with and without key and prefix, `Init`,
+`Update`, `Final` and `Clear`, at lengths from 0 to 1000 bytes, including
+a full and a one-byte final block), and counts the values left on the
+stack below the caller afterwards. Any of those values left after a normal
+return fails the scan. It looks for whole eight-byte words, so a partial
+word or a value derived from them (an intermediate of the compression)
+would not be recognised. The region it reads is at least 24 KiB and is
+doubled while the deepest non-zero byte found is near its end, so it is
+sized from what was left, not from the deepest frame written. Every verdict has a control: the same build with `strub`
+and `zero_call_used_regs` removed must leave values (on macOS arm64 it does, in 21 of
+the 26 scenarios), or, where the call leaves none even unhardened, a
+deliberate spill of the secrets into a volatile local must be found in
+the control and not in the hardened build. `scripts/test-check-stack-scan.sh`
+shows the scan fails when `Update`'s `strub` is removed and when the
+compression function is put back out of line (removing `flatten` alone is
+caught by the source check, not by the scan). Not claimed: an exception
+(measured and reported, not gated: values do remain after one), a task
+abort, `Clear` (it has no `strub`; it reads no secret), the one-shot
+`Hash` wrappers (they are not hardened themselves; they call `Digest_Of`,
+which is, and are measured through the public calls), and callee-saved
+registers. That `flatten` is on each entry point is checked in the source,
+because at `-O3 -gnatn` the compiler inlines the helpers anyway and the
+object cannot show it missing. The x86-64 red zone (a leaf function may
+use stack below the stack pointer) is argued in the scan's header, not
+measured. The checks run on all four platforms in CI; the allow-lists in
+`check-hardening.sh` were derived on macOS arm64.
 
 ## How the proof is structured
 
@@ -301,6 +355,14 @@ uses them restores the caller's values before returning.
   of the state. `Theorem_Incremental` puts it all together: for every
   key, digest length, message and way of cutting the message into pieces,
   the real procedures produce `Spec.Hash` of the message.
+- `Blake2b.Hashing.Counter_Arithmetic` (private): the 128-bit counter's
+  addition, proved against mathematical integers and against the model's
+  `Plus`. It is a unit of its own so that it is proved under the default
+  step budget (`blake2b-hashing.adb` has ten times as much for its
+  theorems; under that budget a prover can run on for hours on a false
+  counter goal, so a dropped carry could not be shown caught). It is
+  `Inline_Always`, so it runs inside the scrubbed bodies, and
+  `scripts/check-hardening.sh` fails if its object defines any function.
 - Composition: function bodies are hidden from the provers except where
   they are the thing being proved, and an extensionality lemma turns
   element-wise array equality into logical equality, so each step
@@ -345,6 +407,9 @@ cd ..
 scripts/matrix.sh                     # seven build configurations
 scripts/mutants.sh                    # thirty deliberate faults
 scripts/check-hardening.sh            # wipes and scrubbing in object code
+scripts/test-check-hardening-negative.sh  # the check fails when a hardening is removed
+scripts/check-stack-scan.sh           # nothing left on the stack after a normal return
+scripts/test-check-stack-scan.sh      # the scan fails when strub or the inlining is removed
 scripts/check-constant-time.sh        # Linux x86-64, needs Valgrind headers
 scripts/check-sources.sh              # no proof escape hatches (Import too)
 ```
@@ -370,19 +435,23 @@ The suite checks:
 The mutation suite applies thirty single-site faults to a scratch copy:
 fourteen in the code and its models, sixteen in the streaming theory.
 It checks that each is caught by the proof, the tests, or both, as
-expected. The fourteen:
+expected. The two carry faults, `carry` and `plus-carry`, are judged as
+strictly as the theory faults below, in the counter's own unit: each must
+leave its unproved check there, failed within the step budget. (Up to 0.1.1
+the counter was proved under `blake2b-hashing.adb`'s larger budget, where
+Alt-Ergo ran past any memory guard on them, so neither was ever shown
+caught.) The fourteen:
 - rotation constants, a schedule entry, an IV word, the parameter block,
   the final-block flag, the keyed counter, digest truncation, the
   last-block rule, and a fault in the specification;
 - `Update` buffering zeroes instead of the input, and an off-by-one in
   the incremental model;
-- three that only the proof can catch:
-  - the counter's carry dropped from the code;
-  - the carry dropped from the model's counter;
-  - the proof model seeing the leftover bytes past the buffer.
-
-  A carry only happens after 2^64 bytes, which no test can reach, and the
-  tests execute their own copy of the model.
+- the counter's carry dropped from the code, and from the model's counter,
+  each caught by the proof and by a test that calls the counter's addition
+  and the model's `Plus` directly (through the public interface a carry
+  takes 2^64 bytes);
+- one that only the proof can catch: the proof model seeing the leftover
+  bytes past the buffer (the tests execute their own copy of the model).
 
 The sixteen theory faults are proof-only, because no build compiles the
 theory. Each must leave an unproved check inside the unit named for it
@@ -446,6 +515,12 @@ against the BLAKE2 reference C compiled by the same GCC at the same
 | 1 MiB | 711 MB/s | 773 MB/s | 1.09 |
 
 These figures include the hardening, which the reference does not do.
+Since 0.1.2-dev the compression function is inlined into the entry points
+(see "What the wipes promise"). Measured on macOS arm64 against 0.1.1, not
+on the machine of this table: bulk data about 3-4% faster, 1 KiB the same,
+64 bytes about 6.5% slower, and `blake2b-hashing.o` about six times larger
+(35 KB of code, five copies of the unrolled rounds). The table above
+predates that change.
 Stack scrubbing and register zeroing cost about 0.15× at 64 bytes, a
 fixed cost per call, and nothing measurable on bulk data. Wall-clock
 figures vary with the machine, so CI gates the deterministic figure
@@ -471,7 +546,7 @@ Next:
   GNAT 16;
 - an external review.
 
-`argon2id_spark` (Argon2id, RFC 9106) builds on this crate.
+`argon2` (Argon2, RFC 9106) builds on this crate.
 
 ## License
 
