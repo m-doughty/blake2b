@@ -112,18 +112,35 @@ def scrubbing_sites(text, mode):
             offset = 3 if optional_add else 2
             if optional_add:
                 require(sequence[2].operands == "$0x20,%rsp", f"unexpected strub stack adjustment: {name}")
-            expected = (("mov", "%rsp,%rax"), ("cmp", "%rsp,%rdx"), ("jae", None),
-                        ("sub", "$0x8,%rax"), ("movq", "$0x0,(%rax)"),
-                        ("cmp", "%rax,%rdx"), ("jb", None))
+            # GCC schedules the loop's start (mov %rsp,%rax) before the
+            # test or after it, on the path that scrubs (Update, Linux
+            # x86-64, once Compress is inlined); the two are the same loop.
+            # Each order: its instructions, the index of its forward branch
+            # and the instructions' exact lengths.
+            orders = (
+                ((("mov", "%rsp,%rax"), ("cmp", "%rsp,%rdx"), ("jae", None),
+                  ("sub", "$0x8,%rax"), ("movq", "$0x0,(%rax)"),
+                  ("cmp", "%rax,%rdx"), ("jb", None)), 2, (3, 3, 2, 4, 7, 3, 2)),
+                ((("cmp", "%rsp,%rdx"), ("jae", None), ("mov", "%rsp,%rax"),
+                  ("sub", "$0x8,%rax"), ("movq", "$0x0,(%rax)"),
+                  ("cmp", "%rax,%rdx"), ("jb", None)), 1, (3, 2, 3, 4, 7, 3, 2)),
+            )
             loop = sequence[offset:offset + 7]
             require(len(loop) == 7, f"truncated strub loop: {name}")
-            for instruction, (operation, operands) in zip(loop, expected):
-                require(instruction.operation == operation and (operands is None or instruction.operands == operands),
-                        f"unrecognized strub instruction at {instruction.address:#x}: {name}")
+            matching = [order for order in orders
+                        if all(instruction.operation == operation
+                               and (operands is None or instruction.operands == operands)
+                               for instruction, (operation, operands) in zip(loop, order[0]))]
+            if not matching:
+                first = next(instruction for instruction, (operation, operands) in zip(loop, orders[0][0])
+                             if not (instruction.operation == operation
+                                     and (operands is None or instruction.operands == operands)))
+                require(False, f"unrecognized strub instruction at {first.address:#x}: {name}")
+            _, forward, loop_lengths = matching[0]
             end_index = start + offset + 7
             require(end_index < len(instructions), f"missing strub loop end: {name}")
             end = instructions[end_index]
-            require(branch_target(loop[2]) == (end.address, f"{name}+0x{end.address-functions[name][0]:x}"),
+            require(branch_target(loop[forward]) == (end.address, f"{name}+0x{end.address-functions[name][0]:x}"),
                     f"unexpected strub forward branch: {name}")
             require(branch_target(loop[6]) == (loop[3].address, f"{name}+0x{loop[3].address-functions[name][0]:x}"),
                     f"unexpected strub back branch: {name}")
@@ -132,13 +149,13 @@ def scrubbing_sites(text, mode):
             lengths = [5, 4 if load.operands.startswith("-") else 5]
             if optional_add:
                 lengths.append(4)
-            lengths.extend((3, 3, 2, 4, 7, 3, 2))
+            lengths.extend(loop_lengths)
             segment = instructions[start:end_index + 1]
             require(all(b.address - a.address == length for a, b, length in zip(segment, segment[1:], lengths)),
                     f"non-contiguous strub epilogue: {name}")
             interior = {i.address for i in segment[1:-1]}
             for instruction in instructions:
-                if instruction.operation.startswith("j") and instruction not in (loop[2], loop[6]):
+                if instruction.operation.startswith("j") and instruction not in (loop[forward], loop[6]):
                     require(branch_target(instruction)[0] not in interior, f"unexpected entry into strub loop: {name}")
             found.append(loop[4].address)
         require(len(found) == 1, f"expected exactly one verified scrubbing loop: {name}")

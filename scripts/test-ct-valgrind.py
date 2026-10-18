@@ -22,8 +22,10 @@ ELF_HEADER = b"\x7fELF\x02\x01\x01" + b"\x00" * 9 + b"\x02\x00\x3e\x00" + b"\x00
 BINARY.write_bytes(ELF_HEADER)
 
 
-def assembly(hardened=True):
-    """Reproduce GNAT 16.1's five wrapper epilogues, including real lengths."""
+def assembly(hardened=True, late_mov=()):
+    """Reproduce GNAT 16.1's five wrapper epilogues, including real lengths.
+    Wrappers named in late_mov start the loop after the test, as GCC
+    schedules Update's on Linux x86-64."""
     lines = ["/tmp/ct-main: file format elf64-x86-64", "Disassembly of section .text:"]
     sites = {}
     for index, name in enumerate(gate.WRAPPERS):
@@ -39,8 +41,11 @@ def assembly(hardened=True):
         instructions.append((4 if index < 2 else 5, "mov", "-0x8(%rbp),%rdx" if index < 2 else "0x8(%rsp),%rdx"))
         if index < 2:
             instructions.append((4, "add", "$0x20,%rsp"))
-        instructions.extend([(3, "mov", "%rsp,%rax"), (3, "cmp", "%rsp,%rdx"), (2, "jae", "END"),
-                             (4, "sub", "$0x8,%rax"), (7, "movq", "$0x0,(%rax)"),
+        if name in late_mov:
+            instructions.extend([(3, "cmp", "%rsp,%rdx"), (2, "jae", "END"), (3, "mov", "%rsp,%rax")])
+        else:
+            instructions.extend([(3, "mov", "%rsp,%rax"), (3, "cmp", "%rsp,%rdx"), (2, "jae", "END")])
+        instructions.extend([(4, "sub", "$0x8,%rax"), (7, "movq", "$0x0,(%rax)"),
                              (3, "cmp", "%rax,%rdx"), (2, "jb", "START"), (1, "ret", "")])
         addresses = []
         cursor = base
@@ -120,6 +125,20 @@ class GateTests(unittest.TestCase):
     def test_all_five_sites_allowed(self):
         errors = [error_record(name, site, unique=hex(i + 1)) for i, (name, site) in enumerate(self.sites.items())]
         self.check(report(errors))
+
+    def test_loop_started_after_the_test_allowed(self):
+        text, sites = assembly(late_mov=(gate.WRAPPERS[3],))
+        errors = [error_record(name, site, unique=hex(i + 1)) for i, (name, site) in enumerate(sites.items())]
+        self.check(report(errors), text)
+
+    def test_loop_started_after_the_test_wrong_branch_fails(self):
+        text, _ = assembly(late_mov=(gate.WRAPPERS[3],))
+        name = gate.WRAPPERS[3]
+        lines = text.splitlines()
+        index = next(i for i, line in enumerate(lines) if f"<{name}>:" in line)
+        jae = next(i for i in range(index, len(lines)) if " jae " in lines[i])
+        lines[jae] = lines[jae].rsplit(" ", 1)[0] + f" <{name}+0x1>"
+        self.reject(assembly_text="\n".join(lines))
 
     def test_plain_without_errors_passes(self):
         self.check(report(), self.plain, "plain")
