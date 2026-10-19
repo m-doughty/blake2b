@@ -13,8 +13,8 @@ is
 
    --  Block N of the padded input d (RFC 7693, section 3.3): the key
    --  block, or the 128 bytes of Prefix followed by Message starting at
-   --  data offset 128 * (N - KB), zero-padded. Two slice copies at most;
-   --  a 128-byte copy is small next to a compression.
+   --  data offset 128 * (N - KB), zero-padded. Two element-loop copies at
+   --  most; a 128-byte copy is small next to a compression.
    procedure Fill_Block
      (Key, Prefix, Message : Byte_Array;
       N                    : I64;
@@ -30,9 +30,24 @@ is
    is
       KB : constant I64 := (if Key'Length > 0 then 1 else 0);
    begin
+      --  No C library call may run inside the hardened bodies: strub
+      --  scrubs only the frame of the body it wraps, not the frames of
+      --  memcpy, memmove or memset. So the copies are element loops, not
+      --  slice assignments (which compile to those calls), and
+      --  -fno-tree-loop-distribute-patterns keeps GCC from turning the
+      --  loops back into them (blake2b.gpr). The fixed-size zeroing stays
+      --  an aggregate: -finline-stringops keeps it inline, and as a loop
+      --  it made GCC spill the inlined compression's working vector to
+      --  the stack.
       Buf := [others => 0];
       if N < KB then
-         Buf (0 .. Key'Length - 1) := Key;
+         for J in I64 range 0 .. Key'Length - 1 loop
+            Buf (J) := Key (Key'First + J);
+            pragma Loop_Invariant
+              ((for all K in 0 .. J => Buf (K) = Key (Key'First + K))
+               and then (for all K in J + 1 .. Block_Bytes - 1 =>
+                           Buf (K) = 0));
+         end loop;
       else
          declare
             D0 : constant I64 := Block_Bytes * (N - KB);
@@ -46,19 +61,61 @@ is
                declare
                   P_Hi : constant I64 := I64'Min (D0 + Block_Bytes, PL);
                begin
-                  Buf (0 .. P_Hi - D0 - 1) :=
-                    Prefix (Prefix'First + D0 .. Prefix'First + P_Hi - 1);
+                  for J in 0 .. P_Hi - D0 - 1 loop
+                     Buf (J) := Prefix (Prefix'First + D0 + J);
+                     pragma Loop_Invariant
+                       ((for all K in 0 .. J =>
+                           Buf (K) = Prefix (Prefix'First + D0 + K))
+                        and then (for all K in J + 1 .. Block_Bytes - 1 =>
+                                    Buf (K) = 0));
+                  end loop;
                end;
             end if;
             --  Those that fall inside Message.
             if Lo < Hi then
-               Buf (Lo - D0 .. Hi - D0 - 1) :=
-                 Message (Message'First + (Lo - PL)
-                          .. Message'First + (Hi - PL) - 1);
+               for J in Lo - D0 .. Hi - D0 - 1 loop
+                  Buf (J) := Message (Message'First + (D0 + J - PL));
+                  pragma Loop_Invariant
+                    ((for all K in Lo - D0 .. J =>
+                        Buf (K) = Message (Message'First + (D0 + K - PL)))
+                     and then (for all K in 0 .. Lo - D0 - 1 =>
+                                 Buf (K) = Buf'Loop_Entry (K))
+                     and then (for all K in J + 1 .. Block_Bytes - 1 =>
+                                 Buf (K) = 0));
+               end loop;
             end if;
          end;
       end if;
    end Fill_Block;
+
+   --  Digest (Digest'First + J) := byte J of H read little-endian (RFC
+   --  7693, section 3.3), for every J. An element loop: an iterated
+   --  aggregate is built in a temporary and copied into Digest (a libc
+   --  call, see Fill_Block), and zeroing Digest first, so that flow
+   --  analysis sees it set, is a fill of variable length, a byte loop
+   --  that slowed 64-byte hashes by about 7%. With Relaxed_Initialization
+   --  proof tracks each byte the loop sets instead.
+   procedure Write_Digest (H : Words8; Digest : out Byte_Array)
+   with Inline_Always,
+        Relaxed_Initialization => Digest,
+        Global => null,
+        Pre    => Digest'Length in 1 .. Max_Digest_Bytes,
+        Post   =>
+          Digest'Initialized
+          and then (for all J in Digest'Range =>
+                      Digest (J) = Core.Out_Byte (H, J - Digest'First));
+
+   procedure Write_Digest (H : Words8; Digest : out Byte_Array) is
+   begin
+      for J in Digest'Range loop
+         Digest (J) := Core.Out_Byte (H, J - Digest'First);
+         pragma Loop_Invariant
+           (for all K in Digest'First .. J => Digest (K)'Initialized);
+         pragma Loop_Invariant
+           (for all K in Digest'First .. J =>
+              Digest (K) = Core.Out_Byte (H, K - Digest'First));
+      end loop;
+   end Write_Digest;
 
    --  The one-shot hash itself; both public Hash procedures call it. It
    --  is the single place secrets pass through on the one-shot path, so
@@ -139,8 +196,7 @@ is
          Last => True);
       Core.Lemma_Same8 (H, Spec.Final_H (Key, Prefix, Message, NN));
 
-      Digest :=
-        [for J in Digest'Range => Core.Out_Byte (H, J - Digest'First)];
+      Write_Digest (H, Digest);
 
       --  The chaining value and the last block are as secret as the key
       --  and message they came from. Wiping values that are never read
@@ -261,13 +317,21 @@ is
       S.H := Core.Initial_H (Key'Length, Length);
       S.T_Lo := 0;
       S.T_Hi := 0;
+      --  An aggregate, kept inline; the key is copied with a loop (see
+      --  Fill_Block).
       S.Buf := [others => 0];
       S.NN := Length;
       S.Phase := Absorbing;
       --  A key is absorbed as a full, zero-padded block (RFC 7693,
       --  section 3.3), held back in the buffer like any other last block.
       if Key'Length > 0 then
-         S.Buf (0 .. Key'Length - 1) := Key;
+         for J in I64 range 0 .. Key'Length - 1 loop
+            S.Buf (J) := Key (Key'First + J);
+            pragma Loop_Invariant
+              ((for all K in 0 .. J => S.Buf (K) = Key (Key'First + K))
+               and then (for all K in J + 1 .. Block_Bytes - 1 =>
+                           S.Buf (K) = 0));
+         end loop;
          S.Buf_Len := Block_Bytes;
       else
          S.Buf_Len := 0;
@@ -305,8 +369,17 @@ is
          declare
             Fill : constant I64 := Block_Bytes - S.Buf_Len;
          begin
-            S.Buf (S.Buf_Len .. Block_Bytes - 1) :=
-              Data (Pos .. Pos + Fill - 1);
+            --  An element loop, not a slice assignment (see Fill_Block).
+            --  Data cannot overlap S.Buf (SPARK forbids the aliasing, and
+            --  Buf is private), so copying forwards is the slice's meaning.
+            for J in S.Buf_Len .. Block_Bytes - 1 loop
+               S.Buf (J) := Data (Pos + (J - S.Buf_Len));
+               pragma Loop_Invariant
+                 ((for all K in S.Buf_Len .. J =>
+                     S.Buf (K) = Data (Pos + (K - S.Buf_Len)))
+                  and then (for all K in 0 .. S.Buf_Len - 1 =>
+                              S.Buf (K) = S.Buf'Loop_Entry (K)));
+            end loop;
             Pos := Pos + Fill;
             Left := Left - Fill;
          end;
@@ -402,8 +475,15 @@ is
                        S.Buf (J)
                        = Spec.Block_Of (No_Bytes, Tail0, Data, Blocks) (J)));
 
-      S.Buf (S.Buf_Len .. S.Buf_Len + Left - 1) :=
-        Data (Pos .. Pos + Left - 1);
+      --  As above: an element loop, forwards.
+      for J in S.Buf_Len .. S.Buf_Len + Left - 1 loop
+         S.Buf (J) := Data (Pos + (J - S.Buf_Len));
+         pragma Loop_Invariant
+           ((for all K in S.Buf_Len .. J =>
+               S.Buf (K) = Data (Pos + (K - S.Buf_Len)))
+            and then (for all K in 0 .. S.Buf_Len - 1 =>
+                        S.Buf (K) = S.Buf'Loop_Entry (K)));
+      end loop;
       S.Buf_Len := S.Buf_Len + Left;
       Lemma_Bound (S.T_Hi, S.T_Lo, S.Buf_Len);
 
@@ -456,7 +536,14 @@ is
       --  The last block: counter = every input byte (RFC 7693, section
       --  3.3), zero-padded, compressed with the final flag.
       Add_Counter (S.T_Hi, S.T_Lo, U64 (S.Buf_Len));
-      S.Buf (S.Buf_Len .. Block_Bytes - 1) := [others => 0];
+      --  An element loop, not an aggregate (see Fill_Block).
+      for J in S.Buf_Len .. Block_Bytes - 1 loop
+         S.Buf (J) := 0;
+         pragma Loop_Invariant
+           ((for all K in S.Buf_Len .. J => S.Buf (K) = 0)
+            and then (for all K in 0 .. S.Buf_Len - 1 =>
+                        S.Buf (K) = S.Buf'Loop_Entry (K)));
+      end loop;
       pragma Assert
         (Static => (for all J in Block_Index => S.Buf (J) = C0.Buf (J)));
       Core.Lemma_Same_Block (S.Buf, C0.Buf);
@@ -471,8 +558,7 @@ is
                     T_Lo => Inc.Plus (C0.T, U64 (C0.Buf_Len)).Lo,
                     T_Hi => Inc.Plus (C0.T, U64 (C0.Buf_Len)).Hi,
                     Last => True));
-      Digest :=
-        [for J in Digest'Range => Core.Out_Byte (S.H, J - Digest'First)];
+      Write_Digest (S.H, Digest);
       Wipe_State (S);
       S.Phase := Finalized;
    end Final;

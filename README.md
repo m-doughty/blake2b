@@ -242,7 +242,7 @@ Two things to get right in your own proofs:
 | Each layer catches the faults it should | Tested: mutation suite |
 | No branch or memory index depends on key or message in the exercised cases | Tested: Valgrind memcheck on isolated plain and hardened builds, with deliberate secret-branch controls (Linux x86-64 CI) |
 | State is wiped by `Final` and `Clear` | Proof (postconditions) and test; wipes checked present in release object code |
-| After a normal return of `Init`, `Update`, `Final` or `Hash`, no key, message or chaining-value word is left on the stack | Tested: stack scan (26 scenarios, each against a control that does leave canaries), and checked in object code. Not proved; exceptions and task abort are not claimed |
+| After a normal return of `Init`, `Update`, `Final` or `Hash`, no key, message or chaining-value word is left on the stack | Tested: stack scan (30 scenarios, each against a control that does leave canaries), and checked in object code. Not proved; exceptions and task abort are not claimed |
 
 **What the proof rests on** (the trusted base): GNATprove 16.1.0 with
 Why3 and the Z3, CVC5 and Alt-Ergo provers; the GNAT/GCC compiler; the
@@ -263,19 +263,35 @@ code rather than proved:
 - wipe routines that are never inlined and never subject to
   interprocedural analysis;
 - GCC stack scrubbing (`strub`) of the body it wraps. `strub` scrubs only
-  that stack, not the frames of callees outside the body (`memcpy`,
-  `memmove`, `memset`, the wipe routines; the stack scan below finds no
-  canary in them, which is the only evidence), so the compression function
+  that stack, not the frames of callees outside the body, so the
+  compression function
   is `Inline_Always` and the four hardened entry points are `flatten`ed:
   its message words and working vector live in the scrubbed frame. (Up to
   0.1.1 it was a function of its own, and one message word could remain in
   its frame after a normal return.) `scripts/check-hardening.sh` fails if
   any function other than the entry points, their clones and the
   accessors that handle no secret is defined in `blake2b-hashing.o`, or if
-  `Compress` has a symbol or is called. The leaf C library routines
-  `memcpy`, `memmove` and `memset` may still be called from inside an
-  entry point; they run inside the call, whose return zeroes every
-  call-used register, and are listed by the check;
+  `Compress` has a symbol or is called;
+- no call out of the scrubbed bodies but to the two wipe routines and a
+  small run-time class (below): copies
+  and fills are element loops, and `blake2b-hashing.adb` is compiled with
+  `-fno-tree-loop-distribute-patterns` and `-finline-stringops`, so that
+  no C library `memcpy`, `memmove` or `memset` runs below the scrubbed
+  frame, and `Initial_H` is `Inline_Always`. (On one Linux x86-64 CI
+  machine key words were left on the stack after a keyed `Update`, most
+  likely from such a call. Removing the calls removes that mechanism; the
+  leak has not yet been reproduced to show it gone: the stack scan's
+  `control-libc` build, with the calls back, is the test.) The wipe
+  routines keep `noipa`, which rules out `strub` on them, so the check
+  requires them to be frameless leaves: no stack use and no call, so
+  their frames hold nothing. `scripts/check-hardening.sh` fails on any
+  C library or other call, on a call through a register, and on a wipe
+  routine with a frame. The run-time class is trusted, not inspected: the
+  unwinder and GNAT's personality routine (only when an exception
+  propagates, which is not claimed), and, on the targets that need them,
+  GCC's out-of-line `strub` helpers, the Windows stack probe and the
+  stack-protector failure routine. On macOS arm64 the bodies reference
+  only the first two;
 - zeroing of **every** call-used register on return
   (`zero_call_used_regs ("all")`), including those only the compression
   function used. `"used"` would clear only the entry point's own
@@ -289,12 +305,13 @@ uses them restores the caller's values before returning.
 
 The register claim is for the registers the compiler's target description
 names, which is what `zero_call_used_regs` zeroes and what the check reads.
-Registers outside that view are not covered: on Linux x86-64 with AVX-512,
-the C library's `memcpy` and `memmove` may use `ymm16`-`ymm31`, which the
-baseline x86-64 target does not name, so key or message bytes copied by them
-could remain there (inferred, not measured); on AArch64 the upper halves of
-`v8`-`v15` are neither zeroed nor restored (the shipped object uses none of
-them). The claim covers the release profile (checks and contracts off). A
+Registers outside that view are not covered: on AArch64 the upper halves
+of `v8`-`v15` are neither zeroed nor restored (the shipped object uses none
+of them); with no C library call left in the scrubbed bodies, nothing in
+them uses `ymm16`-`ymm31` on x86-64. The claim covers the release profile
+(checks and contracts off) of the static library, which is what Alire
+builds by default: in a shared-library build the calls to the wipe routines
+go through the dynamic linker, whose resolver is not checked. A
 contracts-enabled build evaluates the specification on the secrets, outside
 the scrubbed bodies, and is for testing only.
 
@@ -309,8 +326,8 @@ word or a value derived from them (an intermediate of the compression)
 would not be recognised. The region it reads is at least 24 KiB and is
 doubled while the deepest non-zero byte found is near its end, so it is
 sized from what was left, not from the deepest frame written. Every verdict has a control: the same build with `strub`
-and `zero_call_used_regs` removed must leave values (on macOS arm64 it does, in 21 of
-the 26 scenarios), or, where the call leaves none even unhardened, a
+and `zero_call_used_regs` removed must leave values (on macOS arm64 it does, in 25 of
+the 30 scenarios), or, where the call leaves none even unhardened, a
 deliberate spill of the secrets into a volatile local must be found in
 the control and not in the hardened build. `scripts/test-check-stack-scan.sh`
 shows the scan fails when `Update`'s `strub` is removed and when the

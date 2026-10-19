@@ -3,9 +3,11 @@
 # that the hardening survived optimisation. The hardened entry points are
 # Init, Update, Final and the one-shot Digest_Of (behind both Hash
 # procedures). Each carries GCC's strub ("internal"), zero_call_used_regs
-# ("all") and flatten attributes, and the compression function is
-# Inline_Always, so that every secret the hash handles stays in a stack
-# frame that is scrubbed on return.
+# ("all") and flatten attributes, and the compression function and
+# Initial_H are Inline_Always, so that every secret the hash handles stays
+# in a stack frame that is scrubbed on return: the hardened bodies call
+# nothing but the wipe routines, which have no frame of their own (and
+# the run-time's unwinder, on the exception path).
 #
 # In the source (src/blake2b-hashing.ads and .adb, comments removed):
 #  * each entry point carries the three attributes. flatten cannot be seen
@@ -39,6 +41,13 @@
 #    record names the function itself (listed with its addend: its real
 #    target is not the one the instruction shows), and an indirect jump
 #    (jmp *%rax, br x1: listed as *indirect*), whose target is not known;
+#  * no call through a register or memory (zeroed-at-return.awk,
+#    report=exits: call *%rax, call *0x0(%rip) through a GOT or import
+#    slot, blr x8, blraaz x8; listed as *indirect-call*) from an entry
+#    point, a wrapper, a clone or a cold part: its target is not known,
+#    so the reference checks below, which read symbol names, cannot say
+#    what it runs. Each fails by the function's name. A direct call is
+#    left to those checks: the symbol it calls is a reference nm lists;
 #  * none of them falls through its end (zeroed-at-return.awk,
 #    report=exits): its last instruction, after any trailing nop padding,
 #    is a return, an unconditional jump, a trap or a call (to a routine
@@ -60,28 +69,44 @@
 #    of line, fails the check by name. Section symbols (COFF), assembler
 #    temporaries (Mach-O ltmp<n>) and mapping symbols (ELF $x, $d) are not
 #    functions and are ignored;
-#  * no call out of line into Blake2b.Core, but for Initial_H (its inputs
-#    are the key and digest lengths, which are public) and its constant
-#    tables; a call to Compress or to a helper that loads the message
-#    words fails by name;
+#  * no call out of line into Blake2b.Core: a call to Compress, to
+#    Initial_H (Inline_Always, so that the hardened bodies call nothing in
+#    Blake2b.Core) or to a helper that loads the message words fails by
+#    name. Only its constant tables (IV, Sigma: public data, read in
+#    place) may be referenced;
+#  * no call into the C library: memcpy, memmove and memset, in any
+#    spelling (Mach-O's _memcpy, the fortified __memcpy_chk, an ELF
+#    memcpy@plt or memcpy@GLIBC_2.14, a Windows import __imp_memcpy or
+#    __imp__memcpy), each fail by name. strub scrubs only the frames of
+#    the body it wraps: a routine called from inside it runs in a frame
+#    below the scrub watermark, and what it leaves there (spilled vector
+#    registers, the dynamic linker's lazy-binding resolver saving them on
+#    a first call) is never scrubbed. The copies in the source are loops,
+#    and blake2b.gpr keeps GCC from turning them back into calls
+#    (-fno-tree-loop-distribute-patterns, -finline-stringops);
 #  * calls to both wipe routines (never inlined or dropped as dead
 #    stores);
 #  * the other symbols the object references in other units are listed:
-#    memcpy, memmove and memset (leaf libc routines called inside the
-#    scrubbed body; zero_call_used_regs zeroes every call-used register
-#    when the entry point returns), the wipe routines, and the GNAT and
-#    GCC run-time routines. Any other reference fails by name;
+#    the two wipe routines, Blake2b.No_Bytes, and the GNAT and GCC
+#    run-time routines (the unwinder and personality routine on the
+#    exception path, strub's own, the stack probe). A reference to any
+#    other routine of Blake2b.Wipe fails by name: only the two are
+#    checked frameless below, from the one list both checks read. Any
+#    other reference fails by name. A reference is an undefined symbol,
+#    strong (nm's U) or weak (w or v with no address: a weak memcpy is
+#    the same call once the C library is linked in);
 #  * nothing proof-only: no model, lemma or theorem code, and no
 #    secondary-stack use. (GNAT sets up the secondary stack for a Static
 #    assertion that calls a function returning an unconstrained array,
 #    even though it then drops the assertion).
 #
 # In obj/release-profile-profile/blake2b-core.o:
-#  * no definition of Compress (Inline_Always: a symbol means the inlining
-#    did not take), and no function outside the exact set the unit is
-#    expected to keep out of line: Initial_H, Load64, Load_Words, Out_Byte
-#    and the initialisation procedures GNAT generates for its array types
-#    Schedule and Schedule_Row (each with any GCC clone or cold part).
+#  * no definition of Compress or Initial_H (both Inline_Always: a symbol
+#    means the inlining did not take), and no function outside the exact
+#    set the unit is expected to keep out of line: Load64, Load_Words,
+#    Out_Byte and the initialisation procedures GNAT generates for its
+#    array types Schedule and Schedule_Row (each with any GCC clone or
+#    cold part).
 #    The functions it defines are listed.
 #
 # In obj/release-profile-profile/blake2b-hashing-counter_arithmetic.o:
@@ -89,13 +114,29 @@
 #    clone or a cold part means a copy outside the scrubbed bodies) and
 #    Value is ghost.
 #
+# In obj/release-profile-profile/blake2b-wipe.o:
+#  * both wipe routines (Sanitize_Words8, Sanitize_Block) are frameless
+#    leaves, on every platform (zeroed-at-return.awk, report=frame and
+#    report=exits): no instruction that adjusts the stack pointer (push,
+#    pop, enter, leave, any write to sp), none that names the stack or
+#    frame pointer (a load or store relative to either, the x86-64 red
+#    zone included), no call, no jump out, no fall-through, nothing the
+#    parser cannot decode. They are called from inside the scrubbed
+#    bodies, so their frames lie below the scrub watermark: strub scrubs
+#    only the body it wraps, and noipa (which keeps them out of line and
+#    their stores alive) forbids strub on them. What keeps a secret out
+#    of their frames is that they have none: they store zeros through
+#    their argument from a register and return.
+#
 # In every release object: no big-integer code (the ghost proof model).
 #
 # Not checked: how much of the stack the wrappers scrub (GCC scrubs the
-# clone's frame), nor what the listed external calls leave behind.
+# clone's frame), nor what the run-time routines leave behind (the
+# unwinder runs only when an exception propagates; strub's own routines
+# are its scrubbing).
 #
-# The register and jump checks read the code and its relocation records
-# (objdump -d -r); the rest reads symbol names (nm). Exit status: 0 if
+# The register, jump and frame checks read the code and its relocation
+# records (objdump -d -r); the rest reads symbol names (nm). Exit status: 0 if
 # every check passes, 1 if one fails, 2 if the toolchain or the objects
 # cannot be read.
 #
@@ -145,7 +186,8 @@ obj=obj/release-profile-profile
 hashing_o=$obj/blake2b-hashing.o
 core_o=$obj/blake2b-core.o
 counter_o=$obj/blake2b-hashing-counter_arithmetic.o
-for object in "$hashing_o" "$core_o" "$counter_o"; do
+wipe_o=$obj/blake2b-wipe.o
+for object in "$hashing_o" "$core_o" "$counter_o" "$wipe_o"; do
   if [ ! -f "$object" ]; then
     echo "missing $object (did the build fail?)"
     exit 2
@@ -167,10 +209,12 @@ fi
 
 # Prints the functions (text symbols) nm's output $1 defines, one per
 # line, without the Mach-O underscore, in lower case, sorted bytewise.
+# Weak definitions (W, w with an address) count too: a function emitted
+# weak is as much out of line as one emitted strong.
 text_functions () {
   awk -v p="$prefix" '
     { sub(/\r$/, "") }
-    NF >= 3 && $(NF - 1) ~ /^[Tt]$/ {
+    NF >= 3 && $(NF - 1) ~ /^[TtWw]$/ {
       s = $NF
       # A COFF section symbol (.text, .text$name), a Mach-O assembler
       # temporary (ltmp<n>) or an ELF mapping symbol ($x, $d) labels a
@@ -182,11 +226,15 @@ text_functions () {
 }
 
 # Prints the symbols nm's output $1 references (undefined), one per line,
-# without the Mach-O underscore (case kept), sorted bytewise.
+# without the Mach-O underscore (case kept), sorted bytewise. An undefined
+# weak reference counts as much as a plain one: a weak memcpy, once the
+# C library is linked in, is the same call. nm types it w (or v, a weak
+# object) with no address; with an address, W, V, w and v are weak
+# definitions, which are not references.
 references () {
   awk -v p="$prefix" '
     { sub(/\r$/, "") }
-    NF >= 2 && $(NF - 1) == "U" {
+    (NF >= 2 && $(NF - 1) == "U") || (NF == 2 && $1 ~ /^[wv]$/) {
       s = $NF
       if (p != "" && substr(s, 1, 1) == p) s = substr(s, 2)
       print s
@@ -263,8 +311,13 @@ for entry in digest_of init update final; do
     fail=1
   fi
 done
-for wipe in sanitize_words8 sanitize_block; do
-  if grep -qE "U .*blake2b__wipe__${wipe}" <<< "$syms"; then
+# The wipe routines the hardened bodies may call: each is checked below
+# to be a frameless leaf, and this one list is both what blake2b-hashing.o
+# must call and what it may call in Blake2b.Wipe, so the two cannot drift
+# apart.
+wipe_routines="sanitize_words8 sanitize_block"
+for wipe in $wipe_routines; do
+  if grep -qixF "blake2b__wipe__${wipe}" <<< "$hashing_refs"; then
     echo "wipe call present: $wipe"
   else
     echo "MISSING wipe call: $wipe"
@@ -307,19 +360,22 @@ else
 fi
 
 # The functions defined in blake2b-core.o.
-core_plain="blake2b__core__initial_h blake2b__core__load64"
+core_plain="blake2b__core__load64"
 core_plain="$core_plain blake2b__core__load_words blake2b__core__out_byte"
 core_plain="$core_plain blake2b__core__tschedulebip"
 core_plain="$core_plain blake2b__core__tschedule_rowbip"
 echo "blake2b-core.o defines:" $core_functions
-if grep -qE '^blake2b__core__compress(\.|$)' <<< "$core_functions"; then
-  echo "NOT inlined: blake2b-core.o defines blake2b__core__compress" \
-       "(Compress is Inline_Always; the inlining did not take):" \
-       $(grep -E '^blake2b__core__compress(\.|$)' <<< "$core_functions")
-  fail=1
-fi
+for inline_always in Compress Initial_H; do
+  lower=$(tr '[:upper:]' '[:lower:]' <<< "$inline_always")
+  if grep -qE "^blake2b__core__$lower(\\.|\$)" <<< "$core_functions"; then
+    echo "NOT inlined: blake2b-core.o defines blake2b__core__$lower" \
+         "($inline_always is Inline_Always; the inlining did not take):" \
+         $(grep -E "^blake2b__core__$lower(\\.|\$)" <<< "$core_functions")
+    fail=1
+  fi
+done
 core_stray=$(classify "" "$core_plain" <<< "$core_functions" \
-  | awk '$1 == "stray" && $2 !~ /^blake2b__core__compress(\.|$)/ { printf " %s", $2 }')
+  | awk '$1 == "stray" && $2 !~ /^blake2b__core__(compress|initial_h)(\.|$)/ { printf " %s", $2 }')
 if [ -n "$core_stray" ]; then
   echo "blake2b-core.o defines a function outside the expected set" \
        "(a helper left out of line?):$core_stray"
@@ -337,7 +393,7 @@ else
 fi
 
 # What blake2b-hashing.o calls in other units.
-libc="" wipes="" runtime="" core_refs="" core_bad="" other=""
+wipes="" runtime="" core_refs="" core_bad="" other=""
 for ref in $hashing_refs; do
   lower=$(tr '[:upper:]' '[:lower:]' <<< "$ref")
   case $lower in
@@ -345,13 +401,43 @@ for ref in $hashing_refs; do
       echo "NOT inlined: blake2b-hashing.o calls $ref out of line" \
            "(outside the scrubbed frame)"
       fail=1 ;;
-    blake2b__core__initial_h|blake2b__core__iv|blake2b__core__sigma)
+    blake2b__core__initial_h|blake2b__core__initial_h.*)
+      echo "NOT inlined: blake2b-hashing.o calls Blake2b.Core.Initial_H" \
+           "out of line (outside the scrubbed frame; Initial_H is" \
+           "Inline_Always): $ref"
+      fail=1 ;;
+    blake2b__core__iv|blake2b__core__sigma)
       core_refs="$core_refs $ref" ;;
     blake2b__core__*) core_bad="$core_bad $ref" ;;
-    blake2b__wipe__*|blake2b__no_bytes) wipes="$wipes $ref" ;;
+    blake2b__no_bytes) wipes="$wipes $ref" ;;
+    blake2b__wipe__*)
+      # Only the routines of the one list, which are checked frameless
+      # below: any other routine of Blake2b.Wipe would run in a frame
+      # below the scrub watermark that nothing here has looked at.
+      if [[ " $wipe_routines " = *" ${lower#blake2b__wipe__} "* ]]; then
+        wipes="$wipes $ref"
+      else
+        echo "NOT allowed: blake2b-hashing.o calls a wipe routine that is" \
+             "not checked frameless (the checked ones: $wipe_routines):" \
+             "$ref"
+        fail=1
+      fi ;;
     *)
-      if grep -qE '^_*(memcpy|memmove|memset)(_chk)?$' <<< "$lower"; then
-        libc="$libc $ref"
+      # memcpy, memmove and memset in any spelling: leading underscores
+      # (Mach-O, the fortified __memcpy_chk), a Windows import (__imp_,
+      # __imp__), an ELF PLT or symbol-version suffix (@plt, @GLIBC_2.14,
+      # @@GLIBC_2.2.5). The message names the routine, and the spelling
+      # when it differs.
+      routine=$(sed -nE 's/^(_*imp_)?_*(memcpy|memmove|memset)(_chk)?(@.*)?$/\2/p' <<< "$lower")
+      if [ -n "$routine" ]; then
+        if [ "$routine" = "$ref" ]; then
+          spelling=""
+        else
+          spelling=" (as $ref)"
+        fi
+        echo "NOT allowed: blake2b-hashing.o calls the C library (outside" \
+             "the scrubbed frame): $routine$spelling"
+        fail=1
       elif grep -qE '^_*(unwind_resume|gnat_personality_(v0|seh0)|strub_(enter|leave|update)|chkstk(_ms)?|stack_chk_fail)$' <<< "$lower"; then
         runtime="$runtime $ref"
       else
@@ -364,8 +450,7 @@ if [ -n "$core_bad" ]; then
        "line (outside the scrubbed frame):$core_bad"
   fail=1
 fi
-echo "references to libc leaf routines (allowed):${libc:- none}"
-echo "references to Blake2b.Core (public parameters and constants):${core_refs:- none}"
+echo "references to Blake2b.Core constant tables (IV, Sigma):${core_refs:- none}"
 echo "references to the wipe routines and Blake2b.No_Bytes:${wipes:- none}"
 echo "references to the GNAT and GCC run-time:${runtime:- none}"
 if [ -n "$other" ]; then
@@ -491,8 +576,9 @@ fi
 # returns, so their clearing says nothing for it. Each entry point,
 # wrapper and clone may jump only into its own cold part, which runs in
 # its frame; a cold part, of any function, may jump nowhere. Nor may any
-# of them run off its end into whatever follows it.
-jumps_own=""
+# of them run off its end into whatever follows it, or call through a
+# register or memory (its direct calls are the references checked above).
+jumps_own="" indirect_calls=""
 for fn in $(awk '$1 == "entry" || $2 ~ /\.cold(\.[0-9]+)?$/ { print $2 }' <<< "$classes"); do
   exits=$(awk -v fn="$fn" -v report=exits -f scripts/zeroed-at-return.awk \
             <<< "$hashing_dis")
@@ -510,6 +596,16 @@ for fn in $(awk '$1 == "entry" || $2 ~ /\.cold(\.[0-9]+)?$/ { print $2 }' <<< "$
     falls='*falls-through* '
     if [ "${target#"$falls"}" != "$target" ]; then
       echo "FALLS THROUGH the end of $fn: ${target#"$falls"}"
+      fail=1
+      continue
+    fi
+    # A call through a register or memory runs code that no symbol names,
+    # so the reference checks above cannot say what it is or that it
+    # leaves nothing in a frame below the scrubbed one.
+    if [ "$target" = '*indirect-call*' ]; then
+      echo "CALLS INDIRECTLY from $fn (through a register or memory: its" \
+           "target is not known, so it is not checked)"
+      indirect_calls="$indirect_calls $fn"
       fail=1
       continue
     fi
@@ -539,6 +635,64 @@ for fn in $(awk '$1 == "entry" || $2 ~ /\.cold(\.[0-9]+)?$/ { print $2 }' <<< "$
 done
 echo "jumps out of the entry points, wrappers, clones and cold parts," \
      "into a function's own cold part (allowed):${jumps_own:- none}"
+if [ -z "$indirect_calls" ]; then
+  echo "no call through a register or memory in the entry points," \
+       "wrappers, clones and cold parts"
+fi
+
+# The wipe routines. The scrubbed bodies call them, so their frames lie
+# below the scrub watermark: strub scrubs only the body it wraps, and
+# noipa, which keeps them out of line and their stores alive, forbids
+# strub on them. So each must have no frame at all: no adjustment of the
+# stack pointer, no access relative to the stack or frame pointer, no
+# call, and no way out but a return (no jump out, no fall-through).
+wipe_dis=$(disassemble "$wipe_o")
+frameless="" not_frameless=0
+for wipe in $wipe_routines; do
+  fn=blake2b__wipe__$wipe
+  frame=$(awk -v fn="$fn" -v report=frame -f scripts/zeroed-at-return.awk \
+            <<< "$wipe_dis")
+  exits=$(awk -v fn="$fn" -v report=exits -f scripts/zeroed-at-return.awk \
+            <<< "$wipe_dis")
+  if [ "$frame" = none ] || [ "$exits" = none ]; then
+    echo "MISSING: $fn is not in the disassembly of blake2b-wipe.o (its" \
+         "frame not checked)"
+    not_frameless=1
+    continue
+  fi
+  bad=0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    echo "NOT a frameless leaf: $wipe ${line#frame: }"
+    bad=1
+  done <<< "$frame"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    target=${line#exit: }
+    falls='*falls-through* '
+    if [ "${target#"$falls"}" != "$target" ]; then
+      echo "NOT a frameless leaf: $wipe falls through its end:" \
+           "${target#"$falls"}"
+    elif [ "$target" = '*indirect-call*' ]; then
+      echo "NOT a frameless leaf: $wipe calls through a register or" \
+           "memory (its target is not known)"
+    else
+      echo "NOT a frameless leaf: $wipe jumps out (only a return is" \
+           "allowed): $target"
+    fi
+    bad=1
+  done <<< "$exits"
+  if [ "$bad" -eq 0 ]; then
+    frameless="$frameless $wipe"
+  else
+    not_frameless=1
+  fi
+done
+if [ "$not_frameless" -eq 0 ]; then
+  echo "wipe routines are frameless leaves:$frameless"
+else
+  fail=1
+fi
 
 if [ "$fail" -eq 0 ]; then
   echo "hardening: present"

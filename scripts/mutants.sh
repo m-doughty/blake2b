@@ -183,7 +183,7 @@ MUTANTS=(
   "lazy-final|src/blake2b-hashing.adb|while Left > Block_Bytes loop|while Left >= Block_Bytes loop|blake2b-hashing.adb|PT"
   "spec-rotation|src/blake2b-spec.ads|VB2 : constant U64 := Rotate_Right (VB1 xor VC2, 63);|VB2 : constant U64 := Rotate_Right (VB1 xor VC2, 62);|blake2b-core.adb|PT"
   "carry|src/blake2b-hashing-counter_arithmetic.adb|Hi := Hi + 1;|Hi := Hi;|blake2b-hashing-counter_arithmetic.adb|PT"
-  "update-content|src/blake2b-hashing.adb|Data (Pos .. Pos + Left - 1);|[others => 0];|blake2b-hashing.adb|PT"
+  "update-content|src/blake2b-hashing.adb|for J in S.Buf_Len .. S.Buf_Len + Left - 1 loop\n         S.Buf (J) := Data (Pos + (J - S.Buf_Len));|for J in S.Buf_Len .. S.Buf_Len + Left - 1 loop\n         S.Buf (J) := 0;|blake2b-hashing.adb|PT"
   "stream-model|src/blake2b-spec-incremental.ads|T       => (Lo => U64 (Block_Bytes * (DD - 1)), Hi => 0),|T       => (Lo => U64 (Block_Bytes * DD), Hi => 0),|blake2b-spec-incremental.adb|PT"
   "plus-carry|src/blake2b-spec-incremental.ads|(Lo => Lo, Hi => (if Lo < N then T.Hi + 1 else T.Hi)));|(Lo => Lo, Hi => T.Hi));|blake2b-hashing-counter_arithmetic.adb|PT"
   "model-stale|src/blake2b-hashing.ads|(if J < S.Buf_Len then S.Buf (J) else 0)],|S.Buf (J)],|blake2b-hashing.adb|P"

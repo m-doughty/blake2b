@@ -2,7 +2,12 @@
 --
 --  Usage: bench_main           throughput table: this implementation vs
 --                              the BLAKE2 reference C, same compiler and
---                              optimisation level, at 64 B .. 1 MiB
+--                              optimisation level, unkeyed at 64 B .. 1 MiB
+--                              and keyed (64-byte key) at 64 B and 1 KiB;
+--                              then incremental hashing of 1 MiB, in 4 KiB
+--                              updates and in 100-byte updates (most of
+--                              which top up a part-filled buffer; the last
+--                              block is padded)
 --         bench_main --check   determinism gate: hashes a fixed corpus,
 --                              compares every digest with the reference
 --                              C, and compares a digest of all the digests
@@ -80,20 +85,21 @@ procedure Bench_Main is
    function Address_Of (B : Byte_Array) return System.Address is
      (if B'Length = 0 then System.Null_Address else B (B'First)'Address);
 
-   function Time_Ada (M : Byte_Array; Iterations : Positive)
+   function Time_Ada (M, K : Byte_Array; Iterations : Positive)
       return Duration
    is
       Digest : Byte_Array (0 .. 63);
       Start  : constant Time := Clock;
    begin
       for I in 1 .. Iterations loop
-         Blake2b.Hashing.Hash (M, No_Bytes, Digest);
+         Blake2b.Hashing.Hash (M, K, Digest);
          Sink := Sink xor Digest (I64 (I mod 64));
       end loop;
       return To_Duration (Clock - Start);
    end Time_Ada;
 
-   function Time_C (M : Byte_Array; Iterations : Positive) return Duration
+   function Time_C (M, K : Byte_Array; Iterations : Positive)
+      return Duration
    is
       Digest : Byte_Array (0 .. 63);
       Start  : constant Time := Clock;
@@ -101,7 +107,7 @@ procedure Bench_Main is
       for I in 1 .. Iterations loop
          if C_Blake2b (Digest (0)'Address, 64, Address_Of (M),
                        Interfaces.C.size_t (M'Length),
-                       System.Null_Address, 0) /= 0
+                       Address_Of (K), Interfaces.C.size_t (K'Length)) /= 0
          then
             raise Program_Error with "reference blake2b() failed";
          end if;
@@ -110,10 +116,9 @@ procedure Bench_Main is
       return To_Duration (Clock - Start);
    end Time_C;
 
-   function Time_Incremental (M : Byte_Array; Iterations : Positive)
-      return Duration
+   function Time_Incremental
+     (M : Byte_Array; Chunk : I64; Iterations : Positive) return Duration
    is
-      Chunk  : constant I64 := 4_096;
       S      : Blake2b.Hashing.State;
       Digest : Byte_Array (0 .. 63);
       Start  : constant Time := Clock;
@@ -146,14 +151,15 @@ procedure Bench_Main is
       return Whole'Image;
    end MB_Per_S;
 
-   procedure Throughput is
-      Sizes : constant array (1 .. 4) of I64 :=
-        [64, 1_024, 65_536, 1_048_576];
-      Runs  : constant := 7;
-      G     : Generator := Make (16#BE_4C_4#);
+   type Size_List is array (Positive range <>) of I64;
+
+   Runs : constant := 7;
+
+   --  One table row per size: one-shot hashes of a message of that size,
+   --  with key K, by this implementation and by the reference C.
+   procedure Rows (G : in out Generator; Sizes : Size_List; K : Byte_Array)
+   is
    begin
-      Put_Line ("BLAKE2b-512, unkeyed, one-shot. Median of"
-                & Runs'Image & " runs; MB/s (10**6 bytes per second).");
       Put_Line ("     size     Ada MB/s     ref C MB/s   Ada time / C time");
       for Size of Sizes loop
          declare
@@ -163,8 +169,8 @@ procedure Bench_Main is
             Ada_T, C_T : Seconds (1 .. Runs);
          begin
             for R in 1 .. Runs loop
-               Ada_T (R) := Time_Ada (M, Iterations);
-               C_T (R) := Time_C (M, Iterations);
+               Ada_T (R) := Time_Ada (M, K, Iterations);
+               C_T (R) := Time_C (M, K, Iterations);
             end loop;
             declare
                A     : constant Duration := Median (Ada_T);
@@ -178,17 +184,37 @@ procedure Bench_Main is
             end;
          end;
       end loop;
+   end Rows;
 
+   procedure Throughput is
+      G : Generator := Make (16#BE_4C_4#);
+   begin
+      Put_Line ("BLAKE2b-512, unkeyed, one-shot. Median of"
+                & Runs'Image & " runs; MB/s (10**6 bytes per second).");
+      Rows (G, [64, 1_024, 65_536, 1_048_576], No_Bytes);
+
+      --  The incremental runs' message is drawn from G before the key and
+      --  the keyed rows' messages, so every input that was drawn before
+      --  the keyed rows existed is unchanged.
       declare
          M          : constant Byte_Array := Random_Bytes (G, 1_048_576);
+         K          : constant Byte_Array := Random_Bytes (G, 64);
          Iterations : constant Positive := 64;
-         T          : Seconds (1 .. Runs);
+         T, T_Small : Seconds (1 .. Runs);
       begin
+         Put_Line ("BLAKE2b-512, keyed (64-byte key), one-shot. Median of"
+                   & Runs'Image & " runs; MB/s (10**6 bytes per second).");
+         Rows (G, [64, 1_024], K);
+
          for R in 1 .. Runs loop
-            T (R) := Time_Incremental (M, Iterations);
+            T (R) := Time_Incremental (M, 4_096, Iterations);
+            T_Small (R) := Time_Incremental (M, 100, Iterations);
          end loop;
          Put_Line ("incremental, 1 MiB in 4 KiB updates: "
                    & MB_Per_S (1_048_576, Iterations, Median (T))
+                   & " MB/s");
+         Put_Line ("incremental, 1 MiB in 100-byte updates: "
+                   & MB_Per_S (1_048_576, Iterations, Median (T_Small))
                    & " MB/s");
       end;
    end Throughput;

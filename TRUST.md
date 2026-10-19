@@ -125,26 +125,39 @@ against constructs the gate does not name.
   strings compared exactly (the object cannot show it missing at `-O3
   -gnatn`); any undefined reference outside the listed classes fails, and so
   does a jump out of an entry point, wrapper or clone (except into its own
-  cold part) or out of a cold part, an indirect jump, and a function that
-  runs off its end. `scripts/check-stack-scan.sh`
-  measures the stack after a normal return in 26 scenarios and fails on any
-  value left, against controls that do leave values. The C library's
-  `memcpy`, `memmove` and `memset` are called from inside the entry points
-  (allowed and listed: they run inside the call, whose return zeroes every
-  call-used register). Callee-saved registers are not zeroed (the ABI
-  restores them). `strub` scrubs the stack of the body it wraps, not the
-  frames of callees outside it (the libc routines, the wipe routines): the
-  evidence that they hold nothing is that the stack scan finds no canary
-  below the caller. Its region is at least 24 KiB and is doubled while the
+  cold part) or out of a cold part, an indirect jump or call, an
+  undecoded instruction, and a function that runs off its end; weak
+  references and weak definitions count like strong ones. `scripts/check-stack-scan.sh`
+  measures the stack after a normal return in 30 scenarios and fails on any
+  value left, against controls that do leave values. The scrubbed bodies
+  call nothing but the two wipe routines and a trusted, uninspected
+  run-time class (the unwinder and GNAT's personality routine on the
+  exception path; where a target needs them, GCC's `strub` helpers, the
+  Windows stack probe and the stack-protector failure routine): copies
+  are element loops,
+  `blake2b-hashing.adb` is compiled with `-fno-tree-loop-distribute-patterns`
+  and `-finline-stringops`, `Initial_H` is `Inline_Always`, and the object
+  check fails on any `memcpy`, `memmove` or `memset` in any spelling and on
+  `Initial_H`. Callee-saved registers are not zeroed (the ABI restores
+  them). `strub` scrubs the stack of the body it wraps, not the frames of
+  callees outside it; the wipe routines keep `noipa`, which rules out
+  `strub` on them, and the object check requires them to be frameless
+  leaves (no stack use, no call), so they have no frame to hold anything.
+  The stack scan finds no canary below the caller. Key words were found
+  after a keyed `Update` on one Linux x86-64 CI machine before the C
+  library calls were removed; removing them removes the suspected
+  mechanism, but that leak has not been reproduced since (the scan's
+  `control-libc` build, with the calls back, is how it would be). Its region is at least 24 KiB and is doubled while the
   deepest non-zero byte it finds is near its end; it does not show that
   every byte the call wrote was read.
 - **Not claimed:** the stack after an exception or a task abort (measured
   and reported, not gated: values do remain after an exception); `Clear`
   (no `strub`; it reads no secret); the one-shot `Hash` wrappers, which are
   not hardened themselves (they call `Digest_Of`, which is); registers outside the
-  compiler's target description (on Linux x86-64 with AVX-512 the C
-  library's `memcpy` may use `ymm16`-`ymm31`, which baseline x86-64 does not
-  name; on AArch64 the upper halves of `v8`-`v15`; inferred, not measured);
+  compiler's target description (on AArch64 the upper halves of `v8`-`v15`;
+  the shipped object uses none); a shared-library build (the calls to the
+  wipe routines then go through the dynamic linker's resolver, which is not
+  checked: the claim is for the static library);
   partial words and derived values, which the scan's whole-word canaries do
   not recognise; the registers of the one-shot `Hash` wrappers after
   `Digest_Of` returns (they hold stack addresses, not secrets, in the

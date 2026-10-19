@@ -6,6 +6,7 @@
 --  raises (see the script).
 --
 --  Usage: stack_scan <KiB> <spacer KiB> <step> <k|u> <length> <normal|raise>
+--           [warm]
 --    step    the call measured, one of
 --              hash1   Blake2b.Hashing.Hash (Message, Key, Digest), on
 --                      message bytes 0 .. length - 1;
@@ -26,6 +27,16 @@
 --            final only): baseline, raise (the inputs below, which fire an
 --            injected raise) and normal (as in mode normal, where none
 --            fires).
+--    warm    (update in mode normal only) the measured call is the second
+--            of its kind in the process: before the region is cleared, the
+--            same Update is made on a second state set up as the first
+--            (Init, then the same message), and discarded. So the measured
+--            call runs with the caches warm and with the lazy bindings of
+--            this Update resolved, and its inputs, state and canaries are
+--            those of the call without warm. (Neither kind of call is the
+--            process's first into the C library; scripts/check-stack-scan.sh
+--            separates the resolver with an LD_BIND_NOW run.) The scenario is then named
+--            <step>-<k|u>-<length>-warm.
 --  The raise run's inputs: for hash1, hash2 and final, a message of 1,920
 --  bytes keyed or 2,048 unkeyed, so that the last compression has the
 --  final flag and the byte counter 2,048; for update, Update (S, message
@@ -36,7 +47,8 @@
 --  For each run it clears KiB KiB of stack below one helper frame, makes
 --  the call from that frame, copies the same region and counts the canary
 --  words in it. The calls that set up the state (Init and Update before
---  the measured one) run before the region is cleared. The call goes
+--  the measured one, and with warm the first of the two calls) run before
+--  the region is cleared. The call goes
 --  through Call, which holds the handler for an injected Program_Error,
 --  and Inner, whose frame holds an unused spacer of <spacer KiB> KiB: the
 --  handler's own calls into the run-time run just below Call's frame,
@@ -53,7 +65,7 @@
 --    H  the chaining value after each compression of the whole message
 --       (Blake2b_Reference; the last eight words are the digest).
 --  Output, one line per run and class (see Stack_Probe.Put_Hits):
---    hits scenario=<step>-<k|u>-<length> run=<r> raised=<yes|no>
+--    hits scenario=<step>-<k|u>-<length>[-warm] run=<r> raised=<yes|no>
 --      touched=<bytes> class=<K|M|H> aligned=<n> unaligned=<n>
 --      distinct=<n> depths=<list>
 --  and, after the normal run of final and clear, the same counts over the
@@ -117,6 +129,7 @@ procedure Stack_Scan is
    Keyed    : Boolean;
    Length   : Natural;
    Do_Raise : Boolean;
+   Warm     : Boolean := False;
 
    --  The geometry of the current run: message bytes 0 .. Pre_Len - 1 are
    --  absorbed before the call, Data_First .. Data_First + Data_Len - 1 by
@@ -180,12 +193,14 @@ procedure Stack_Scan is
    end Set_Geometry;
 
    --  The inputs of run Run on the heap, and the state the measured call
-   --  starts from (the calls that set it up are made here).
+   --  starts from (the calls that set it up are made here, and with Warm
+   --  the first of the two measured calls, on a state of its own).
    procedure Prepare (Run : Run_Kind)
    with No_Inline;
    pragma Machine_Attribute (Prepare, "noipa");
 
    procedure Prepare (Run : Run_Kind) is
+      Warm_St : State_Access;
    begin
       Set_Geometry (Run);
       Key_In :=
@@ -201,6 +216,16 @@ procedure Stack_Scan is
       if Step in Update | Final | Clear then
          Blake2b.Hashing.Init (St.all, Digest_Bytes, Key_In.all);
          Blake2b.Hashing.Update (St.all, Pre_In.all);
+      end if;
+      --  The first call (Warm is only accepted with step update): the
+      --  same Update, from the same state, on a second state, which is
+      --  then dropped (as every run's heap objects are), so the measured
+      --  call's state and canaries are unchanged.
+      if Warm and then Run /= Baseline then
+         Warm_St := new Blake2b.Hashing.State;
+         Blake2b.Hashing.Init (Warm_St.all, Digest_Bytes, Key_In.all);
+         Blake2b.Hashing.Update (Warm_St.all, Pre_In.all);
+         Blake2b.Hashing.Update (Warm_St.all, Data_In.all);
       end if;
    end Prepare;
 
@@ -278,7 +303,7 @@ procedure Stack_Scan is
 
    function Scenario return String is
      (Ada.Command_Line.Argument (3) & "-" & Ada.Command_Line.Argument (4)
-      & "-" & Ada.Command_Line.Argument (5));
+      & "-" & Ada.Command_Line.Argument (5) & (if Warm then "-warm" else ""));
 
    procedure Fail (Message : String) is
    begin
@@ -293,17 +318,20 @@ begin
       Fail ("big-endian target: not supported");
       return;
    end if;
-   if Ada.Command_Line.Argument_Count /= 6
+   if Ada.Command_Line.Argument_Count not in 6 | 7
      or else (Ada.Command_Line.Argument (4) /= "k"
               and then Ada.Command_Line.Argument (4) /= "u")
      or else (Ada.Command_Line.Argument (6) /= "raise"
               and then Ada.Command_Line.Argument (6) /= "normal")
+     or else (Ada.Command_Line.Argument_Count = 7
+              and then Ada.Command_Line.Argument (7) /= "warm")
    then
       Fail ("usage: stack_scan <KiB> <spacer KiB>"
             & " <hash1|hash2|init|update|final|clear> <k|u> <length>"
-            & " <normal|raise>");
+            & " <normal|raise> [warm]");
       return;
    end if;
+   Warm := Ada.Command_Line.Argument_Count = 7;
    KiB := Positive'Value (Ada.Command_Line.Argument (1));
    Spacer_Words := 128 * Natural'Value (Ada.Command_Line.Argument (2));
    Step := Step_Kind'Value (Ada.Command_Line.Argument (3));
@@ -316,6 +344,10 @@ begin
    end if;
    if Do_Raise and then Step in Init | Clear then
       Fail ("init and clear have no raise run");
+      return;
+   end if;
+   if Warm and then (Step /= Update or else Do_Raise) then
+      Fail ("warm is for update in mode normal only");
       return;
    end if;
    Snap := new Word_Array (0 .. 128 * KiB - 1);

@@ -264,9 +264,9 @@ private
 
    --  Hardening for the subprograms that handle keys and input: GCC's
    --  stack scrubbing (the stack of the body it wraps is zeroed on return; the
-   --  frames of callees outside the body, such as memcpy and the wipe
-   --  routines, are not), and zeroing of every call-used register on
-   --  return.
+   --  frames of callees outside the body are not, so the bodies call only
+   --  the two wipe routines, which have no frame), and zeroing of every
+   --  call-used register on return.
    --  "all", not "used": "used" clears only the registers the subprogram
    --  itself used, and leaves whatever its callees (the compression
    --  function) left in the others. "flatten" pulls the compression

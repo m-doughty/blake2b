@@ -34,9 +34,13 @@
 #     register of a pre- or post-indexed access, and the implicit
 #     destinations of pop, leave, mul, div and the like. A store writes no
 #     register but its base on writeback; a compare writes none. An
-#     instruction whose destinations cannot be told (cpuid, syscall, an
-#     undecoded byte, a mnemonic with no operands outside a short list of
-#     known forms) empties the span. So an epilogue that restores only
+#     instruction whose destinations cannot be told (cpuid, syscall, a
+#     mnemonic with no operands outside a short list of known forms) empties
+#     the span, and so does a word the disassembler could not decode: GNU's
+#     "(bad)" (x86-64), LLVM's "<unknown>", and an assembler directive in
+#     place of a mnemonic (".inst 0xd503201f", ".word", ".long", ".byte"),
+#     which is how both print a word they have no instruction for, or data
+#     inside the code. So an epilogue that restores only
 #     callee-saved registers, sp, fp or lr keeps the call-used registers
 #     zeroed before it, and a load into a zeroed register removes it.
 #
@@ -68,6 +72,14 @@
 #
 #   exit: NAME
 #
+# A call through a register or memory (call *%rax, call *0x8(%rax),
+# call *0x0(%rip) with or without a record, blr x8, blraa x8, x9,
+# blraaz x8) is listed too, as NAME "*indirect-call*": its target is not
+# known, so nothing that reads symbol names can say what it runs. A direct
+# call (call 5 <f+0x5>, bl 0 <memset>), with or without a record, is not
+# listed: the symbol it calls is one the object references, which nm
+# lists.
+#
 # A jump is any branch that is not a call or a return (call, bl, blr,
 # ret and ret x30 are not). It leaves FN when
 #   * it is indirect (jmp *%rax, jmp *0x8(%rip), br x1, br x16, braaz x1),
@@ -98,6 +110,30 @@
 # leading underscore. A function with no jump out prints nothing; one not
 # in the input prints "none".
 #
+# With -v report=frame the output is instead one line per instruction of
+# FN that gives it a stack frame, touches one, or calls out, in order:
+#
+#   frame: REASON: INSN
+#
+# REASON is
+#   * "calls": a call (call, bl, blr, blraaz);
+#   * "uses the stack": an x86-64 push, pop, enter or leave, in any form
+#     (pushq, pushfq, popfq), or an instruction any operand of which names
+#     the stack pointer or the frame pointer, in any view (rsp, esp, sp,
+#     spl, rbp, ebp, bp, bpl; sp, wsp, x29, fp): an adjustment of the
+#     stack pointer, a load or store relative to either, a copy of either;
+#   * "undecoded": an instruction whose destinations cannot be told (as
+#     in the first report: a word the disassembler could not decode, a
+#     directive such as .inst in place of a mnemonic, cpuid, svc), so
+#     neither can whether it writes the stack pointer.
+# INSN is the instruction with its blanks squeezed, and the symbols of the
+# relocation records after it, which name a call's real target in an
+# object file ("call 5 <f+0x5> (record: memset-0x4)"). A symbol label in an
+# operand ("<fn_sp+0x4>") names no register. Jumps are listed only for
+# their operands: the exits report lists the ones that leave FN, and a
+# return is the way out it expects. A function with none of these prints
+# nothing; one not in the input prints "none".
+#
 # Registers are normalised so that the x86-64 and AArch64 spellings of one
 # register compare equal: al/ah/ax/eax/rax -> rax, r8b/r8w/r8d -> r8,
 # xmm/ymm/zmm -> xmm, w/x -> x, and the AArch64 SIMD&FP register views
@@ -107,6 +143,8 @@
 #
 # Usage: awk -v fn=blake2b__hashing__final -f zeroed-at-return.awk dis.txt
 #        awk -v fn=blake2b__hashing__final -v report=exits \
+#          -f zeroed-at-return.awk dis.txt
+#        awk -v fn=blake2b__wipe__sanitize_block -v report=frame \
 #          -f zeroed-at-return.awk dis.txt
 #        (fn matches the symbol with or without a leading underscore)
 #
@@ -188,6 +226,7 @@ function add_written(o,    k, a, i) {
 function classify(m, n,    i, r, same, src) {
   for (r in wr) delete wr[r]
   zr = ""
+  if (is_undecoded(m, n)) return "unknown"
   if (arch == "x86") {
     # Zeroing idioms.
     if ((m ~ /^v?p?xor(b|w|l|q|ps|pd|d)?$/ || m ~ /^kxor[bwdq]$/) && n >= 2) {
@@ -288,6 +327,20 @@ function classify(m, n,    i, r, same, src) {
   return "ok"
 }
 
+# Whether the instruction (base mnemonic m, operands ops[1..n]) is a word
+# the disassembler did not decode: no mnemonic at all, an assembler
+# directive in its place (GNU's ".inst 0x..." for an AArch64 word it has
+# no instruction for, ".word", ".long" or ".byte" for data in the code),
+# GNU's "(bad)" for x86-64 bytes it cannot decode, or LLVM's
+# "<unknown>". GNU can also print "(bad)" as an operand of an
+# instruction it decoded only in part. Such a word may be anything, so
+# what it writes, and whether it touches the stack, cannot be told.
+function is_undecoded(m, n,    i) {
+  if (m == "" || m ~ /^\./ || m ~ /^\(bad\)$/ || m ~ /^<unknown>$/) return 1
+  for (i = 1; i <= n; i++) if (ops[i] ~ /\(bad\)/) return 1
+  return 0
+}
+
 function reset_span(    k) { for (k in span) delete span[k] }
 
 function emit(    k, list, sorted, n, i, j, t) {
@@ -315,6 +368,10 @@ function canon(a) {
 # Parses instruction text t into mnem (the mnemonic, without prefixes or,
 # for AArch64 LLVM, the arrangement suffix: movi.2d -> movi) and ops[1..];
 # returns the operand count. Sets string_op for an x86 string operation.
+# An AArch64 conditional branch keeps its condition (b.ne, bc.eq), and a
+# directive in place of a mnemonic (.inst, .word) keeps its whole name:
+# with the suffix stripped it would be the empty string, which reads as
+# no instruction rather than as a word that was not decoded.
 function parse(t,    w, n, i) {
   string_op = 0
   for (;;) {
@@ -334,7 +391,7 @@ function parse(t,    w, n, i) {
     string_op = 1
     for (i = 1; i <= n; i++) if (ops[i] ~ /%[xyz]mm/) string_op = 0
   }
-  if (mnem !~ /^bc?\./) sub(/\..*$/, "", mnem)
+  if (mnem !~ /^bc?\./ && mnem !~ /^\./) sub(/\..*$/, "", mnem)
   return n
 }
 
@@ -400,12 +457,18 @@ function collect_fall_through(    i, n, t) {
 }
 
 # Adds to exits[] the symbols the jumps of the buffered function leave to,
-# "*indirect*" for an indirect jump, and "*falls-through* INSN" if it
-# runs off its end.
+# "*indirect*" for an indirect jump, "*indirect-call*" for a call through
+# a register or memory, and "*falls-through* INSN" if it runs off its
+# end. A direct call is not added: its record, or its label, names a
+# symbol the object references.
 function collect_exits(    i, n, k, j, a, last, sym) {
   collect_fall_through()
   for (i = 1; i <= ninsn; i++) {
     n = parse(insn_text[i])
+    if (is_call(mnem)) {
+      if (is_indirect(n)) exits["*indirect-call*"] = 1
+      continue
+    }
     if (!is_branch(mnem)) continue
     if (is_indirect(n)) { exits["*indirect*"] = 1; continue }
     if (insn_reloc[i] != "") {
@@ -429,6 +492,54 @@ function collect_exits(    i, n, k, j, a, last, sym) {
   }
 }
 
+# Whether operand o names the stack pointer or the frame pointer, in any
+# view: x86-64's %rsp, %esp, %sp, %spl, %rbp, %ebp, %bp, %bpl; AArch64's
+# sp, wsp, x29, fp. A symbol label (<name+0x4>) is not read.
+function names_stack(o,    t, k, a, i, r) {
+  t = tolower(o)
+  gsub(/<[^>]*>/, " ", t)
+  if (arch == "x86") {
+    while (match(t, /%[a-z0-9]+/)) {
+      r = norm(substr(t, RSTART, RLENGTH))
+      if (r == "rsp" || r == "rbp") return 1
+      t = substr(t, RSTART + RLENGTH)
+    }
+    return 0
+  }
+  k = split(t, a, /[^a-z0-9_.]+/)
+  for (i = 1; i <= k; i++) {
+    if (a[i] == "" || !is_reg(a[i])) continue
+    r = norm(a[i])
+    if (r == "rsp" || r == "x29") return 1
+  }
+  return 0
+}
+
+# Prints "frame: REASON: INSN" for each instruction of the buffered
+# function that calls, uses the stack, or cannot be decoded.
+function collect_frame(    i, n, j, reason, t) {
+  reset_span()
+  for (i = 1; i <= ninsn; i++) {
+    n = parse(insn_text[i])
+    reason = ""
+    if (is_call(mnem)) reason = "calls"
+    else if (arch == "x86" && mnem ~ /^(push|pop|enter|leave)/)
+      reason = "uses the stack"
+    else {
+      for (j = 1; j <= n && reason == ""; j++)
+        if (names_stack(ops[j])) reason = "uses the stack"
+      if (reason == "" && !is_branch(mnem) \
+          && mnem !~ /^ret(l|q|w|aa|ab)?$/ && classify(mnem, n) == "unknown")
+        reason = "undecoded"
+    }
+    if (reason == "") continue
+    t = insn_text[i]
+    gsub(/[ \t]+/, " ", t)
+    if (insn_reloc[i] != "") t = t " (record:" insn_reloc[i] ")"
+    print "frame: " reason ": " t
+  }
+}
+
 function print_exits(    k, sorted, n, i, j, t) {
   n = 0
   for (k in exits) { n++; sorted[n] = k }
@@ -446,6 +557,7 @@ function analyse(    i, n, k, targets, indirect, last, a, sym, kind) {
   arch = "aarch64"
   for (i = 1; i <= ninsn; i++) if (insn_text[i] ~ /%/) { arch = "x86"; break }
   if (report == "exits") { collect_exits(); return }
+  if (report == "frame") { collect_frame(); return }
   indirect = 0
   for (i = 1; i <= ninsn; i++) {
     n = parse(insn_text[i])
@@ -485,12 +597,15 @@ function is_call(m) {
   return m ~ /^l?call[lqw]?$/ || m ~ /^(bl|blr|blra[ab]z?)$/
 }
 
-# Whether the jump just parsed (mnem, ops[1..n]) is indirect: through a
-# register or memory (jmp *%rax, jmp *0x8(%rip), br x1, braaz x1), or with
-# an operand that is not an address, so its target is not known.
+# Whether the jump or call just parsed (mnem, ops[1..n]) is indirect:
+# through a register or memory (jmp *%rax, jmp *0x8(%rip), call *%rax,
+# call *0x0(%rip), br x1, braaz x1, blr x8, blraa x8, x9), or with an
+# operand that is not an address, so its target is not known. A direct
+# one shows an address ("5 <f+0x5>", "0x10 <_g>"), whatever its record
+# says.
 function is_indirect(n,    last, a) {
   last = n > 0 ? ops[n] : ""
-  if (mnem ~ /^bra/ || mnem == "br" || last ~ /^\*/ \
+  if (mnem ~ /^bra/ || mnem == "br" || mnem ~ /^blr/ || last ~ /^\*/ \
       || (arch == "aarch64" && is_reg(last)) || (arch == "x86" && last ~ /%/))
     return 1
   a = last; sub(/[ \t].*$/, "", a)
@@ -580,5 +695,7 @@ END {
   if (report == "exits") {
     if (found_fn) print_exits()
     else print "none"
+  } else if (report == "frame") {
+    if (!found_fn) print "none"
   } else if (!found_ret) print "none"
 }

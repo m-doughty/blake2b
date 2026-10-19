@@ -9,10 +9,23 @@
 # from the relocation records objdump -r prints in an object file (LLVM
 # Mach-O, GNU ELF and GNU COFF), which the first report must ignore; a
 # record that names the function itself, listed with its addend;
-# indirect jumps, listed as "*indirect*", but not calls or returns; and
-# a function that runs off its end, listed as "*falls-through*" with its
-# last instruction, but not one that ends in a return, an unconditional
-# jump, a trap or a call, before any nop padding.
+# indirect jumps, listed as "*indirect*"; calls through a register or
+# memory (blr, blraa, call *%rax, call *0x0(%rip) with a GOT or import
+# record), listed as "*indirect-call*", but not direct calls, with or
+# without a record, or returns; and a function that runs off its end,
+# listed as "*falls-through*" with its last instruction (an undecoded word
+# included), but not one that ends in a return, an unconditional jump, a
+# trap or a call, before any nop padding. A word the disassembler could
+# not decode (GNU's .inst and (bad), LLVM's <unknown>, data printed as
+# .word or .byte) empties the register span. Then the third report,
+# the instructions that give a function a stack frame (report=frame), as
+# check-hardening.sh reads the wipe routines: a frameless zeroing leaf
+# (the real ones, on each format) lists nothing; a push, a pop, an
+# adjustment of the stack pointer, an access relative to the stack or
+# frame pointer (x86-64 red zone included), a call, an instruction whose
+# destinations cannot be told and an undecoded word are each listed, a
+# conditional branch (b.ne, bc.eq) and a symbol label that merely
+# contains "sp" are not, and a function not in the input is "none".
 #
 # Usage: scripts/test-zeroed-at-return.sh
 
@@ -30,6 +43,12 @@ expect () {
 expect_exits () {
   check "$1" "$3" \
     "$(awk -v fn="$2" -v report=exits -f scripts/zeroed-at-return.awk)"
+}
+
+# The same for the third report, the stack frame (report=frame).
+expect_frame () {
+  check "$1" "$3" \
+    "$(awk -v fn="$2" -v report=frame -f scripts/zeroed-at-return.awk)"
 }
 
 # Compares the output $3 of test $1 with $2.
@@ -334,6 +353,40 @@ expect "an instruction with unknown destinations empties the span" probe \
    2:	cpuid
    4:	xor    %edx,%edx
    6:	ret
+EOF
+
+# A word the disassembler could not decode may write anything, so it
+# empties the span like cpuid: GNU's .inst (AArch64) and (bad) (x86-64),
+# LLVM's <unknown>, and data printed as a directive.
+expect "AArch64, GNU objdump: an undecoded word (.inst) empties the span" \
+  probe 'ret: x1' <<'EOF'
+0000000000000000 <probe>:
+   0:	mov	x0, #0x0                   	// #0
+   4:	.inst	0x00b0d7f0 ; undefined
+   8:	mov	x1, #0x0                   	// #0
+   c:	ret
+EOF
+
+expect "AArch64, LLVM objdump: <unknown> and .word empty the span" probe \
+  'ret: x2' <<'EOF'
+0000000000000000 <_probe>:
+       0: 	mov	x0, #0
+       4: 	<unknown>
+       8: 	mov	x1, #0
+       c: 	.word	0x00b0d7f0
+      10: 	mov	x2, #0
+      14: 	ret
+EOF
+
+expect "x86-64, GNU objdump: (bad) and .byte empty the span" probe \
+  'ret: rdx' <<'EOF'
+0000000000000000 <probe>:
+   0:	xor    %eax,%eax
+   2:	(bad)
+   3:	xor    %ecx,%ecx
+   5:	.byte 0x8f
+   6:	xor    %edx,%edx
+   8:	ret
 EOF
 
 expect "x86-64: a string operation writes rax, rcx, rdi and rsi" probe \
@@ -648,23 +701,96 @@ expect_exits "a cold part that ends in an indirect jump, with no return" \
    4:	br	x1
 EOF
 
-expect_exits "calls through registers and returns are not jumps" f '' <<'EOF'
+expect_exits "AArch64: a direct call and returns are not exits" f '' <<'EOF'
 0000000000000000 <f>:
-   0:	blr	x1
-   4:	blraaz	x2
-   8:	bl	0 <g>
-   c:	ret	x30
-  10:	retaa
-  14:	ret
+   0:	bl	0 <g>
+   4:	ret	x30
+   8:	retaa
+   c:	ret
 EOF
 
-expect_exits "x86-64: calls through registers and returns are not jumps" \
+expect_exits "x86-64: a direct call with a record and returns are not exits" \
   f '' <<'EOF'
 0000000000000000 <f>:
+   0:	call   5 <f+0x5>
+			1: R_X86_64_PLT32	memcpy-0x4
+   5:	ret    $0x8
+   8:	ret
+EOF
+
+# Calls through a register or memory: the target is not known, so each
+# function with one lists it once as "*indirect-call*", whatever record
+# follows it (a GOT or import slot names a symbol, but the call goes
+# wherever the slot points). Direct calls beside them stay unlisted.
+expect_exits "AArch64, GNU objdump: blr, blraa and blraaz" f \
+  'exit: *indirect-call*' <<'EOF'
+0000000000000000 <f>:
+   0:	blr	x8
+   4:	blraa	x8, x9
+   8:	blraaz	x1
+   c:	bl	0 <g>
+			c: R_AARCH64_CALL26	g
+  10:	ret
+EOF
+
+expect_exits "AArch64, LLVM objdump, Mach-O object: blr beside a direct bl" f \
+  'exit: *indirect-call*' <<'EOF'
+0000000000000000 <_f>:
+0000000000000000 <ltmp0>:
+       0:      	bl	0x0 <ltmp0>
+		0000000000000000:  ARM64_RELOC_BRANCH26	_memset
+       4:      	blr	x8
+       8:      	blrab	x8, x9
+       c:      	ret
+EOF
+
+expect_exits "x86-64, GNU objdump: calls through a register and memory" f \
+  'exit: *indirect-call*' <<'EOF'
+0000000000000000 <f>:
    0:	call   *%rax
-   2:	call   *0x8(%rip)        # 10 <f+0x10>
-   8:	ret    $0x8
+   2:	notrack call *%rcx
+   5:	call   *0x8(%rax)
+   8:	call   *0x8(%rip)        # 16 <f+0x16>
+   e:	ret
+EOF
+
+expect_exits "x86-64, GNU objdump, ELF object: a call through the GOT" f \
+  'exit: *indirect-call*' <<'EOF'
+0000000000000000 <f>:
+   0:	call   *0x0(%rip)        # 6 <f+0x6>
+			2: R_X86_64_GOTPCRELX	memcpy-0x4
+   6:	call   b <f+0xb>
+			7: R_X86_64_PLT32	_Unwind_Resume-0x4
    b:	ret
+EOF
+
+expect_exits "x86-64, GNU objdump, COFF object, CRLF: a call through an import" \
+  f 'exit: *indirect-call*' < <(crlf <<'EOF'
+
+Disassembly of section .text$f:
+
+0000000000000000 <f>:
+   0:	sub    $0x28,%rsp
+   4:	call   *0x0(%rip)        # a <f+0xa>
+			6: IMAGE_REL_AMD64_REL32	__imp_memcpy
+   a:	add    $0x28,%rsp
+   e:	ret
+EOF
+)
+
+expect_exits "x86-64, LLVM objdump: callq through a register and memory" f \
+  'exit: *indirect-call*' <<'EOF'
+0000000000000000 <_f>:
+       0:	callq	*%rax
+       2:	callq	*8(%rax)
+       5:	retq
+EOF
+
+expect_exits "a cold part that ends in an indirect call" f.cold \
+  'exit: *indirect-call*' <<'EOF'
+0000000000000000 <f.cold>:
+   0:	mov	x0, #0x2a                  	// #42
+   4:	blr	x1
 EOF
 
 # The architecture is told by the % of AT&T register names. An x86-64 cold
@@ -776,6 +902,239 @@ expect_exits "AArch64, LLVM: a return followed by nop padding" f '' <<'EOF'
        4: 	ret
        8: 	nop
        c: 	nop
+EOF
+
+# The stack frame (report=frame). A frameless leaf (stores relative to its
+# argument register, a return) lists nothing; everything that gives it a
+# frame, touches the stack or calls out is listed, in order.
+wipe_llvm=$(cat <<'EOF'
+0000000000000000 <_blake2b__wipe__sanitize_words8>:
+0000000000000000 <ltmp0>:
+       0:      	movi.4s	v31, #0x0
+       4:      	stp	q31, q31, [x0]
+       8:      	stp	q31, q31, [x0, #0x20]
+       c:      	ret
+
+0000000000000010 <_blake2b__wipe__sanitize_block>:
+      10:      	movi.4s	v31, #0x0
+      14:      	stp	q31, q31, [x0]
+      18:      	stp	q31, q31, [x0, #0x20]
+      1c:      	stp	q31, q31, [x0, #0x40]
+      20:      	stp	q31, q31, [x0, #0x60]
+      24:      	ret
+EOF
+)
+expect_frame "AArch64, LLVM objdump (macOS): the first frameless leaf" \
+  blake2b__wipe__sanitize_words8 '' <<< "$wipe_llvm"
+expect_frame "AArch64, LLVM objdump (macOS): the second frameless leaf" \
+  blake2b__wipe__sanitize_block '' <<< "$wipe_llvm"
+expect_exits "AArch64, LLVM objdump (macOS): a frameless leaf jumps nowhere" \
+  blake2b__wipe__sanitize_block '' <<< "$wipe_llvm"
+
+expect_frame "AArch64, GNU objdump (Linux): a frameless leaf" f '' <<'EOF'
+0000000000000000 <f>:
+   0:	movi	v31.4s, #0x0
+   4:	stp	q31, q31, [x0]
+   8:	stp	q31, q31, [x0, #32]
+   c:	ret
+EOF
+
+expect_frame "x86-64, GNU objdump (Linux): a frameless leaf" f '' <<'EOF'
+0000000000000000 <f>:
+   0:	endbr64
+   4:	pxor   %xmm0,%xmm0
+   8:	movups %xmm0,(%rdi)
+   b:	movups %xmm0,0x10(%rdi)
+   f:	movq   $0x0,0x20(%rdi)
+  17:	ret
+  18:	nopl   0x0(%rax,%rax,1)
+EOF
+
+expect_frame "x86-64, GNU objdump, COFF, CRLF: a frameless leaf" f '' \
+  < <(crlf <<'EOF'
+Disassembly of section .text$f:
+
+0000000000000000 <f>:
+   0:	pxor   %xmm0,%xmm0
+   4:	movups %xmm0,(%rcx)
+   7:	movups %xmm0,0x10(%rcx)
+   b:	ret
+EOF
+)
+
+expect_frame "AArch64, GNU objdump: a frame record" f \
+  $'frame: uses the stack: stp x29, x30, [sp, #-16]!\nframe: uses the stack: mov x29, sp\nframe: uses the stack: str xzr, [x29, #16]\nframe: uses the stack: ldp x29, x30, [sp], #16' <<'EOF'
+0000000000000000 <f>:
+   0:	stp	x29, x30, [sp, #-16]!
+   4:	mov	x29, sp
+   8:	str	xzr, [x29, #16]
+   c:	stp	xzr, xzr, [x0]
+  10:	ldp	x29, x30, [sp], #16
+  14:	ret
+EOF
+
+expect_frame "AArch64, LLVM objdump: a stack adjustment and a store to it" f \
+  $'frame: uses the stack: sub sp, sp, #0x10\nframe: uses the stack: str q0, [sp]\nframe: uses the stack: add sp, sp, #0x10' <<'EOF'
+0000000000000000 <_f>:
+       0:      	sub	sp, sp, #0x10
+       4:      	movi.2d	v0, #0000000000000000
+       8:      	str	q0, [sp]
+       c:      	add	sp, sp, #0x10
+      10:      	ret
+EOF
+
+expect_frame "AArch64: a store below sp with no adjustment, and fp by name" f \
+  $'frame: uses the stack: stur xzr, [sp, #-8]\nframe: uses the stack: str wzr, [fp, #4]' <<'EOF'
+0000000000000000 <f>:
+   0:	stur	xzr, [sp, #-8]
+   4:	str	wzr, [fp, #4]
+   8:	ret
+EOF
+
+expect_frame "x86-64, GNU objdump: a frame" f \
+  $'frame: uses the stack: push %rbp\nframe: uses the stack: mov %rsp,%rbp\nframe: uses the stack: sub $0x18,%rsp\nframe: uses the stack: movq $0x0,-0x8(%rbp)\nframe: uses the stack: leave' <<'EOF'
+0000000000000000 <f>:
+   0:	push   %rbp
+   1:	mov    %rsp,%rbp
+   4:	sub    $0x18,%rsp
+   8:	movq   $0x0,-0x8(%rbp)
+  10:	movq   $0x0,(%rdi)
+  17:	leave
+  18:	ret
+EOF
+
+expect_frame "x86-64, LLVM objdump: pushq, popq and pushfq" f \
+  $'frame: uses the stack: pushq %rbx\nframe: uses the stack: pushfq\nframe: uses the stack: popfq\nframe: uses the stack: popq %rbx' <<'EOF'
+0000000000000000 <_f>:
+       0:	pushq	%rbx
+       1:	pushfq
+       2:	xorl	%eax, %eax
+       4:	popfq
+       5:	popq	%rbx
+       6:	retq
+EOF
+
+expect_frame "x86-64: the red zone (a store below rsp, no adjustment)" f \
+  $'frame: uses the stack: movq $0x0,-0x8(%rsp)\nframe: uses the stack: mov %eax,-0x10(%rsp,%rdx,1)\nframe: uses the stack: lea 0x8(%rsp),%rax' <<'EOF'
+0000000000000000 <f>:
+   0:	movq   $0x0,-0x8(%rsp)
+   9:	mov    %eax,-0x10(%rsp,%rdx,1)
+   d:	lea    0x8(%rsp),%rax
+  12:	ret
+EOF
+
+expect_frame "x86-64: enter, and a write to a narrow view of rsp" f \
+  $'frame: uses the stack: enter $0x10,$0x0\nframe: uses the stack: and $0xf0,%spl\nframe: uses the stack: mov %ebp,%eax' <<'EOF'
+0000000000000000 <f>:
+   0:	enter  $0x10,$0x0
+   4:	and    $0xf0,%spl
+   8:	mov    %ebp,%eax
+   a:	ret
+EOF
+
+expect_frame "calls, direct and through a register, with a record" f \
+  $'frame: calls: bl 0 <memset> (record: memset)\nframe: calls: blr x1' <<'EOF'
+0000000000000000 <f>:
+   0:	bl	0 <memset>
+			0: R_AARCH64_CALL26	memset
+   4:	blr	x1
+   8:	ret
+EOF
+
+expect_frame "x86-64, GNU objdump, ELF object: a call with a record" f \
+  'frame: calls: call 5 <f+0x5> (record: memset-0x4)' <<'EOF'
+0000000000000000 <f>:
+   0:	call   5 <f+0x5>
+			1: R_X86_64_PLT32	memset-0x4
+   5:	ret
+EOF
+
+expect_frame "instructions whose destinations cannot be told" f \
+  $'frame: undecoded: svc #0x0\nframe: undecoded: eret' <<'EOF'
+0000000000000000 <f>:
+   0:	svc	#0x0
+   4:	eret
+   8:	ret
+EOF
+
+expect_frame "x86-64: cpuid cannot be told" f 'frame: undecoded: cpuid' <<'EOF'
+0000000000000000 <f>:
+   0:	xor    %eax,%eax
+   2:	cpuid
+   4:	ret
+EOF
+
+# A word the disassembler could not decode is never certified: it might
+# be a push, a store below sp or a call.
+expect_frame "AArch64, GNU objdump: .inst and .word are undecoded" f \
+  $'frame: undecoded: .inst 0x00b0d7f0\nframe: undecoded: .word 0x00000000' <<'EOF'
+0000000000000000 <f>:
+   0:	movi	v31.4s, #0x0
+   4:	.inst	0x00b0d7f0 ; undefined
+   8:	stp	q31, q31, [x0]
+   c:	.word	0x00000000
+  10:	ret
+EOF
+
+expect_frame "AArch64, LLVM objdump: <unknown> is undecoded" f \
+  'frame: undecoded: <unknown>' <<'EOF'
+0000000000000000 <_f>:
+       0: 	movi.4s	v31, #0x0
+       4: 	<unknown>
+       8: 	stp	q31, q31, [x0]
+       c: 	ret
+EOF
+
+expect_frame "x86-64, GNU objdump: (bad), .byte and a (bad) operand" f \
+  $'frame: undecoded: (bad)\nframe: undecoded: .byte 0x8f\nframe: undecoded: vpxor (bad),%xmm0,%xmm0' <<'EOF'
+0000000000000000 <f>:
+   0:	pxor   %xmm0,%xmm0
+   4:	(bad)
+   5:	.byte 0x8f
+   6:	vpxor  (bad),%xmm0,%xmm0
+   a:	movups %xmm0,(%rdi)
+   d:	ret
+EOF
+
+# The conditional branches keep their condition (b.ne, bc.eq): they are
+# branches, not undecoded words, and a frameless leaf with them lists
+# nothing.
+expect_frame "AArch64: conditional branches are not undecoded" f '' <<'EOF'
+0000000000000000 <f>:
+   0:	cbz	x1, 10 <f+0x10>
+   4:	b.ne	10 <f+0x10>
+   8:	bc.eq	10 <f+0x10>
+   c:	str	xzr, [x0]
+  10:	ret
+EOF
+
+expect_exits "AArch64: conditional branches within the function are no exit" \
+  f '' <<'EOF'
+0000000000000000 <f>:
+   0:	b.ne	8 <f+0x8>
+   4:	bc.eq	8 <f+0x8>
+   8:	ret
+EOF
+
+expect_exits "AArch64, GNU objdump: a function that ends in an undecoded word" \
+  f 'exit: *falls-through* .inst 0x00000000' <<'EOF'
+0000000000000000 <f>:
+   0:	mov	x0, #0x0                   	// #0
+   4:	.inst	0x00000000 ; undefined
+EOF
+
+# A branch to a label that merely contains "sp" or "fp" names no register;
+# jumps out are the exits report's.
+expect_frame "a label that contains sp names no register" f '' <<'EOF'
+0000000000000000 <f>:
+   0:	cbz	x0, 8 <f_sp+0x8>
+   4:	b	8 <fp>
+   8:	ret
+EOF
+
+expect_frame "a function not in the input" g 'none' <<'EOF'
+0000000000000000 <f>:
+   0:	ret
 EOF
 
 echo "zeroed-at-return: $pass passed, $bad failed"

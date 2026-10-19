@@ -17,8 +17,8 @@
   secret, fails if `Compress` has a symbol or is called, and checks in the
   source that each entry point has `strub`, `zero_call_used_regs` and
   `flatten` (the attribute strings are compared exactly: GCC ignores
-  `"Flatten"`); `memcpy`, `memmove` and `memset` are allowed and listed; any
-  other undefined reference fails; a jump out of an entry point, a wrapper
+  `"Flatten"`); any undefined reference outside the wipe routines, the
+  constant tables and the exception run-time fails; a jump out of an entry point, a wrapper
   or a clone fails unless it goes into its own cold part (by name, or by its
   own cold section in a relocation record), and a cold part may jump
   nowhere; an indirect jump, a jump whose relocation names the function
@@ -46,6 +46,28 @@
   the tests catch both mutants too. `scripts/check-hardening.sh`
   fails if the counter's object defines any function, with two new
   negative controls.
+
+- **No C library call inside the scrubbed bodies.** On one Linux x86-64
+  machine the stack scan found key words left after a keyed `Update`:
+  `strub` scrubs only the body it wraps, and the `memcpy`, `memmove` and
+  `memset` calls inside it run in frames below that (the lazy-binding
+  resolver's register save, or AVX-512 copy routines; which one is not yet
+  shown). Copies and fills in `Blake2b.Hashing` are now element loops,
+  `blake2b-hashing.adb` is compiled with `-fno-tree-loop-distribute-patterns`
+  and `-finline-stringops`, and `Initial_H` is `Inline_Always`; the digest
+  is written by a loop alone, its initialization tracked by proof
+  (`Relaxed_Initialization` on a private helper), since zeroing it first
+  cost 7% at 64 bytes. The object check fails on any of those calls in any
+  spelling (weak references included), on a call through a register or
+  memory, on an undecoded instruction, on a weak out-of-line function, and
+  on a wipe routine other than the two it requires to be frameless leaves
+  (they keep `noipa`). The stack scan gains a control with the C library
+  calls back (run again with `LD_BIND_NOW=1`, to tell the dynamic linker's
+  resolver from the routines), four warm-call scenarios (30 in all) and the
+  runner's CPU and binding in its header; `scripts/bench-compare.sh`
+  compares speed with an earlier commit. No contract changed; the claim is
+  for the static library. Measured on macOS arm64 against
+  the previous commit: from 0.6% slower (100-byte updates) to 3% faster.
 
 ## 0.1.1 — 2026-10-14
 

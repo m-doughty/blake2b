@@ -26,7 +26,11 @@ jobs:
           - { name: macos-arm64,    os: macos-15 }
           - { name: windows-x86_64, os: windows-2022 }
     steps:
+      # The whole history: the speed comparison below builds an earlier
+      # commit.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: alire-project/setup-alire@v4
         with:
           version: ${{ env.ALIRE_VERSION }}
@@ -49,16 +53,30 @@ jobs:
       - name: The hardening gate fails when each hardening is removed
         shell: bash
         run: bash scripts/test-check-hardening-negative.sh
+      # Its first lines record the runner: CPU model and AVX-512 flags, C
+      # library version and LD_BIND_NOW (the benchmark below is read with
+      # them). The control-libc build is reported there, not gated.
       - name: Stack scan (nothing left after a normal return of a hardened call)
         shell: bash
         run: bash scripts/check-stack-scan.sh
       - name: The stack scan fails when the hardening is removed
         shell: bash
         run: bash scripts/test-check-stack-scan.sh
+      # Unkeyed and keyed one-shot, incremental in 4 KiB and 100-byte
+      # updates. Fails only if bench_main fails; speed is never judged.
       - name: Benchmark (reported, not gated)
         shell: bash
         working-directory: tests
-        run: ./bin/profile-profile/bench_main
+        run: |
+          alr -n build
+          ./bin/profile-profile/bench_main
+      # 34a32ab: the last commit whose hardened bodies still called the C
+      # library's memcpy, memmove and memset. Medians and spreads of
+      # alternating runs; fails only if a build or a run fails.
+      - name: Speed against 34a32ab (reported, not gated)
+        if: matrix.name == 'linux-x86_64'
+        shell: bash
+        run: bash scripts/bench-compare.sh 34a32ab
       # Two streams longer than any Byte_Array (2**32 + 129 and 2**34 + 36
       # bytes), hashed by Blake2b.Hashing and by both C oracles' own
       # incremental interfaces; also runs the C state-layout size checks.

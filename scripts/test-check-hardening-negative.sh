@@ -22,6 +22,18 @@
 #                         object defines it
 #   counter-no-inline     Add_Counter is No_Inline: defined out of line and
 #                         called from blake2b-hashing.o
+#   initial-h-out-of-line Initial_H loses Inline_Always: blake2b-core.o
+#                         defines it, and blake2b-hashing.o calls it
+#   libc-flags-default    blake2b.gpr's -fno-tree-loop-distribute-patterns
+#                         and -finline-stringops for blake2b-hashing.adb
+#                         become GCC's defaults (-ftree-loop-distribute-
+#                         patterns, -fno-inline-stringops), as if removed:
+#                         GCC turns the copy and zeroing loops back into
+#                         calls to memcpy, memmove or memset. If the
+#                         mutated blake2b-hashing.o references none of
+#                         them (nm), the control is ineffective on this
+#                         target: that fails the run too, with a message
+#                         of its own, not as a call the gate missed
 #
 # Then the unmutated copy must pass. A mutation that does not apply (its
 # source text was not found) fails the run, as does one the gate does not
@@ -48,24 +60,26 @@ mkdir "$crate" "$crate/scripts" "$scratch/pristine"
 cp -R src alire.toml blake2b.gpr "$crate/"
 cp scripts/check-hardening.sh scripts/zeroed-at-return.awk "$crate/scripts/"
 cp src/blake2b-core.ads src/blake2b-hashing.ads \
-   src/blake2b-hashing-counter_arithmetic.ads "$scratch/pristine/"
+   src/blake2b-hashing-counter_arithmetic.ads blake2b.gpr "$scratch/pristine/"
 
-# Rewrites one source file of the scratch copy with the Perl expression
-# $2 (run over the whole file); fails if the file does not change.
+# Rewrites one file of the scratch copy ($1, relative to the crate: a
+# source or the project file) with the Perl expression $2 (run over the
+# whole file); fails if the file does not change.
 mutate () {
-  local file=$crate/src/$1
+  local file=$crate/$1
   perl -0 -pe "$2" "$file" > "$scratch/mutated"
   if cmp -s "$file" "$scratch/mutated"; then
-    echo "FAILED: mutation did not apply to src/$1 (source changed?)"
+    echo "FAILED: mutation did not apply to $1 (source changed?)"
     exit 1
   fi
   cp "$scratch/mutated" "$file"
 }
 
-# Restores the mutated sources.
+# Restores the mutated files.
 restore () {
   cp "$scratch/pristine/blake2b-core.ads" "$scratch/pristine/blake2b-hashing.ads" \
      "$scratch/pristine/blake2b-hashing-counter_arithmetic.ads" "$crate/src/"
+  cp "$scratch/pristine/blake2b.gpr" "$crate/"
 }
 
 # Runs the scratch copy's gate into log $1, from a clean build: a source
@@ -84,9 +98,17 @@ bad=0
 # checks (exit 1) with, for each further argument, a line matching that
 # extended regular expression.
 expect_caught () {
-  local name=$1 status message missed=""
+  local name=$1
   shift
-  status=$(run_gate "$scratch/$name.log")
+  judge "$name" "$(run_gate "$scratch/$name.log")" "$@"
+}
+
+# Judges the gate's run for mutation $1, which ended with exit status $2
+# and wrote its log to $scratch/$1.log, as expect_caught describes; then
+# restores the mutated files.
+judge () {
+  local name=$1 status=$2 message missed=""
+  shift 2
   for message in "$@"; do
     if ! grep -qE -- "$message" "$scratch/$name.log"; then
       missed="$missed [$message]"
@@ -107,51 +129,98 @@ expect_caught () {
   restore
 }
 
-mutate blake2b-core.ads \
+mutate src/blake2b-core.ads \
   's/(procedure Compress\s*\(.*?\bwith\s+)Inline_Always\s*,\s*/$1/s'
 expect_caught compress-out-of-line \
   '^NOT inlined: blake2b-core\.o defines blake2b__core__compress ' \
   '^NOT inlined: blake2b-hashing\.o calls _?blake2b__core__compress '
 
-mutate blake2b-hashing.ads \
+mutate src/blake2b-hashing.ads \
   's/^[ \t]*pragma Machine_Attribute \(Update, "flatten"\);[ \t]*\r?\n//m'
 expect_caught update-no-flatten \
   '^MISSING in the source: pragma Machine_Attribute \(update, "flatten"\);$'
 
 # strub and zero_call_used_regs are caught in the object; the source
 # check names them too.
-mutate blake2b-hashing.ads \
+mutate src/blake2b-hashing.ads \
   's/^[ \t]*pragma Machine_Attribute \(Final, "strub", "internal"\);[ \t]*\r?\n//m'
 expect_caught final-no-strub '^MISSING strub clone: final$' \
   '^MISSING in the source: pragma Machine_Attribute \(final, "strub", "internal"\);$'
 
-mutate blake2b-hashing.ads \
+mutate src/blake2b-hashing.ads \
   's/^[ \t]*pragma Machine_Attribute \(Init, "zero_call_used_regs", "all"\);[ \t]*\r?\n//m'
 expect_caught init-no-zero-regs '^NOT cleared on return from init: ' \
   '^MISSING in the source: pragma Machine_Attribute \(init, "zero_call_used_regs", "all"\);$'
 
 # The attribute names are case-sensitive: GCC ignores a misspelt one with
 # only a warning, and the source check compares them exactly.
-mutate blake2b-hashing.ads \
+mutate src/blake2b-hashing.ads \
   's/(pragma Machine_Attribute \(Update, )"flatten"\);/$1"Flatten");/'
 expect_caught update-flatten-capitalised \
   '^MISSING in the source: pragma Machine_Attribute \(update, "flatten"\);$'
 
-mutate blake2b-hashing.ads \
+mutate src/blake2b-hashing.ads \
   's/(pragma Machine_Attribute \(Final, )"strub"/$1"STRUB"/'
 expect_caught final-strub-upper-case \
   '^MISSING in the source: pragma Machine_Attribute \(final, "strub", "internal"\);$'
 
-mutate blake2b-hashing-counter_arithmetic.ads \
+mutate src/blake2b-hashing-counter_arithmetic.ads \
   's/(procedure Add_Counter\s*\(.*?\bwith\s+)Inline_Always\s*,\s*/$1/s'
 expect_caught counter-no-inline-always \
   '^NOT inlined: blake2b-hashing-counter_arithmetic\.o defines '
 
-mutate blake2b-hashing-counter_arithmetic.ads \
+mutate src/blake2b-hashing-counter_arithmetic.ads \
   's/(procedure Add_Counter\s*\(.*?\bwith\s+)Inline_Always\b/$1No_Inline/s'
 expect_caught counter-no-inline \
   '^NOT inlined: blake2b-hashing-counter_arithmetic\.o defines ' \
   '^NOT allowed: blake2b-hashing\.o references .*add_counter'
+
+# Initial_H's Inline_Always, wherever it stands among the aspects (or
+# alone, with its "with").
+mutate src/blake2b-core.ads \
+  's{(function\s+Initial_H\s*\([^)]*\)\s*return\s+[\w.]+)(\s+with\s+)([^;]*)(;)}{my ($d, $w, $a, $e) = ($1, $2, $3, $4); if ($a =~ /^\s*Inline_Always\s*$/) { "$d$e" } else { $a =~ s/\bInline_Always\s*,\s*// or $a =~ s/\s*,\s*Inline_Always\b//; "$d$w$a$e" }}se'
+expect_caught initial-h-out-of-line \
+  '^NOT inlined: blake2b-core\.o defines blake2b__core__initial_h ' \
+  '^NOT inlined: blake2b-hashing\.o calls Blake2b\.Core\.Initial_H out of line '
+
+# Each flag back to GCC's default, wherever blake2b.gpr sets it; mutate
+# requires each to be found. The control is required, but it shows the
+# gate at work only if the mutated object does call the C library: a
+# target where GCC keeps the loops as loops even without the two flags
+# fails here with its own message, not as a gate that missed a call. The
+# object is read with nm (undefined references, strong or weak, in any
+# spelling the gate knows) after the gate has built it.
+mutate blake2b.gpr \
+  's/"-fno-tree-loop-distribute-patterns"/"-ftree-loop-distribute-patterns"/g'
+mutate blake2b.gpr 's/"-finline-stringops"/"-fno-inline-stringops"/g'
+status=$(run_gate "$scratch/libc-flags-default.log")
+mutated_o=$crate/obj/release-profile-profile/blake2b-hashing.o
+if [ -f "$mutated_o" ] && libc_syms=$("${NM:-nm}" "$mutated_o" 2>&1); then
+  libc_refs=$(awk '
+    { sub(/\r$/, "") }
+    (NF >= 2 && $(NF - 1) == "U") || (NF == 2 && $1 ~ /^[wv]$/) {
+      s = tolower($NF)
+      if (s ~ /^(_*imp_)?_*(memcpy|memmove|memset)(_chk)?(@.*)?$/) printf " %s", $NF
+    }' <<< "$libc_syms")
+  if [ -z "$libc_refs" ]; then
+    echo "FAILED: libc-flags-default: the control is ineffective on this" \
+         "target: without the two flags blake2b-hashing.o still references" \
+         "no C library routine (memcpy, memmove or memset, in any" \
+         "spelling), so it cannot show that the gate catches one"
+    bad=$((bad + 1))
+    restore
+  else
+    echo "libc-flags-default: blake2b-hashing.o references the C library" \
+         "without the two flags:$libc_refs"
+    judge libc-flags-default "$status" \
+      '^NOT allowed: blake2b-hashing\.o calls the C library \(outside the scrubbed frame\): mem(cpy|move|set)'
+  fi
+else
+  # No object to read (the build failed): the judgement reports the
+  # gate's exit status and its log.
+  judge libc-flags-default "$status" \
+    '^NOT allowed: blake2b-hashing\.o calls the C library \(outside the scrubbed frame\): mem(cpy|move|set)'
+fi
 
 status=$(run_gate "$scratch/pristine.log")
 if [ "$status" -eq 0 ] && grep -q '^hardening: present$' "$scratch/pristine.log"; then

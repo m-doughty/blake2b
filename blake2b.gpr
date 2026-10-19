@@ -57,14 +57,29 @@ project Blake2b is
    for Object_Dir use "obj/" & Blake2b_Config.Build_Profile & "-" & Cell;
    for Library_Dir use "lib/" & Blake2b_Config.Build_Profile & "-" & Cell;
 
+   --  No C library routine may run, unscrubbed, inside the hardened
+   --  bodies (src/blake2b-hashing.adb): they copy with element loops,
+   --  which -fno-tree-loop-distribute-patterns keeps GCC from turning back
+   --  into calls to memcpy, memmove or memset, and -finline-stringops
+   --  keeps their block copies and fills inline where GCC would call the
+   --  C library. A file's Switches replace the Default_Switches, so each
+   --  arm restates them.
+   No_Libc_Switches :=
+     ("-fno-tree-loop-distribute-patterns", "-finline-stringops");
+
    package Compiler is
       case Opt is
          when "profile" =>
             for Default_Switches ("Ada") use
               Blake2b_Config.Ada_Compiler_Switches;
+            for Switches ("blake2b-hashing.adb") use
+              Blake2b_Config.Ada_Compiler_Switches & No_Libc_Switches;
          when others =>
             for Default_Switches ("Ada") use
               Common_Switches & Opt_Switches & Check_Switches;
+            for Switches ("blake2b-hashing.adb") use
+              Common_Switches & Opt_Switches & Check_Switches
+              & No_Libc_Switches;
       end case;
    end Compiler;
 

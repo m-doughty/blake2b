@@ -99,8 +99,11 @@ is
         Post   => Same_Block (L, R);
 
    --  Section 3.3: the initial chaining value with the parameter block.
+   --  Inline_Always, so that the hardened bodies (Blake2b.Hashing) call
+   --  nothing in Blake2b.Core.
    function Initial_H (KK : Key_Length; NN : Digest_Length) return Words8
-   with Global => null,
+   with Inline_Always,
+        Global => null,
         Post   => Initial_H'Result = Spec.Initial_H (KK, NN);
 
    --  Section 3.3: byte J of the digest, from h read little-endian.
