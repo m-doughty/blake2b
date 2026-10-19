@@ -520,28 +520,33 @@ the workaround cannot silently turn off secret-use checking. `ALR`,
 
 ## Benchmarks
 
-`tests/bin/profile-profile/bench_main`: BLAKE2b-512, unkeyed, one-shot,
-against the BLAKE2 reference C compiled by the same GCC at the same
-`-O3`. Median of 7 runs, Windows 11 x86_64, GNAT 16.1.0:
+`tests/bin/profile-profile/bench_main`: BLAKE2b-512, one-shot, against
+the BLAKE2 reference C compiled by the same GCC at the same `-O3`. Median
+of 7 runs, Linux x86_64 (a GitHub-hosted runner, AMD EPYC 7763), GNAT
+16.1.0, 0.1.2:
 
 | Message | blake2b | reference C | time ratio |
 |---|---|---|---|
-| 64 B | 256 MB/s | 356 MB/s | 1.39 |
-| 1 KiB | 728 MB/s | 806 MB/s | 1.11 |
-| 64 KiB | 753 MB/s | 817 MB/s | 1.09 |
-| 1 MiB | 711 MB/s | 773 MB/s | 1.09 |
+| 64 B | 247 MB/s | 310 MB/s | 1.25 |
+| 1 KiB | 783 MB/s | 767 MB/s | 0.98 |
+| 64 KiB | 860 MB/s | 789 MB/s | 0.92 |
+| 1 MiB | 860 MB/s | 789 MB/s | 0.92 |
+| 64 B, 64-byte key | 158 MB/s | 176 MB/s | 1.11 |
+| 1 KiB, 64-byte key | 707 MB/s | 681 MB/s | 0.96 |
 
 These figures include the hardening, which the reference does not do.
-Since 0.1.2-dev the compression function is inlined into the entry points
-(see "What the wipes promise"). Measured on macOS arm64 against 0.1.1, not
-on the machine of this table: bulk data about 3-4% faster, 1 KiB the same,
-64 bytes about 6.5% slower, and `blake2b-hashing.o` about six times larger
-(35 KB of code, five copies of the unrolled rounds). The table above
-predates that change.
 Stack scrubbing and register zeroing cost about 0.15× at 64 bytes, a
-fixed cost per call, and nothing measurable on bulk data. Wall-clock
-figures vary with the machine, so CI gates the deterministic figure
-instead: the ratio of instructions executed, measured with callgrind.
+fixed cost per call, and nothing measurable on bulk data (macOS arm64,
+0.1.2: 64 bytes unkeyed 1.16× the time of the same build without
+them, 64 bytes keyed 1.06×, 1 MiB the same). Since 0.1.2 the
+compression function is inlined into the entry points and the hardened
+bodies call no C library routine (see "What the wipes promise");
+`blake2b-hashing.o` is about seven times larger than in 0.1.1 (40 KB of
+code on macOS arm64: five copies of the unrolled rounds). `scripts/bench-compare.sh` compares the speed
+of the working tree with an earlier commit; CI runs it on Linux x86_64
+and reports it without gating. Wall-clock figures vary with the machine,
+so CI gates the deterministic figure instead: the ratio of instructions
+executed, measured with callgrind.
 
 ## Vendored / third-party
 
@@ -556,7 +561,8 @@ Sources and SHA-256 digests are pinned in `tests/ref/SOURCES.md`.
 
 ## Status & roadmap
 
-Current version: **0.1.1** (2026-10-14). Previous release: 0.1.0 (2026-10-07).
+Current version: **0.1.2** (2026-10-19). Previous releases: 0.1.1
+(2026-10-14), 0.1.0 (2026-10-07).
 
 Next:
 - coverage-guided fuzzing, using AFL++'s GCC plugin built against

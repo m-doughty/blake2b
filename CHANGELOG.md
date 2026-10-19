@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 — 2026-10-19
+
+**Upgrade from 0.1.1.** After a normal return of a hardened entry point,
+0.1.1 can leave data from the hash on the stack. A stack scan of a
+dependent crate found message words in the frame of its compression
+function on macOS arm64 and Linux. On Linux x86-64, key words may also
+be left through its calls to `memcpy`, `memmove` and `memset`; this was
+seen once with development code that still made those calls. 0.1.2
+scrubs the compression frame and makes no C library call inside the
+scrubbed bodies (both entries below).
 
 - **Compression frame scrubbed.** After a normal return of `Init`, `Update`,
   `Final` or the one-shot `Hash`, one message word could remain on the stack
